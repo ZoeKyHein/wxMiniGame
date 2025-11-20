@@ -1,134 +1,69 @@
-import './render'; // 初始化Canvas
-import Player from './player/index'; // 导入玩家类
-import Enemy from './npc/enemy'; // 导入敌机类
-import BackGround from './runtime/background'; // 导入背景类
-import GameInfo from './runtime/gameinfo'; // 导入游戏UI类
-import Music from './runtime/music'; // 导入音乐类
-import DataBus from './databus'; // 导入数据类，用于管理游戏状态和数据
-
-const ENEMY_GENERATE_INTERVAL = 30;
-const ctx = canvas.getContext('2d'); // 获取canvas的2D绘图上下文;
-
-GameGlobal.databus = new DataBus(); // 全局数据管理，用于管理游戏状态和数据
-GameGlobal.musicManager = new Music(); // 全局音乐管理实例
-
 /**
- * 游戏主函数
+ * 游戏主控类
+ * 负责管理游戏循环、全局状态
  */
 export default class Main {
-  aniId = 0; // 用于存储动画帧的ID
-  bg = new BackGround(); // 创建背景
-  player = new Player(); // 创建玩家
-  gameInfo = new GameInfo(); // 创建游戏UI显示
-
   constructor() {
-    // 当开始游戏被点击时，重新开始游戏
-    this.gameInfo.on('restart', this.start.bind(this));
+    // 1. 获取 Canvas 上下文
+    this.canvas = wx.createCanvas();
+    this.ctx = this.canvas.getContext('2d');
 
-    // 开始游戏
-    this.start();
+    // 2. 适配屏幕宽高
+    const { screenWidth, screenHeight, devicePixelRatio } = wx.getSystemInfoSync();
+    // 显式设置宽高，防止模糊
+    this.canvas.width = screenWidth * devicePixelRatio;
+    this.canvas.height = screenHeight * devicePixelRatio;
+    this.ctx.scale(devicePixelRatio, devicePixelRatio);
+
+    this.screenWidth = screenWidth;
+    this.screenHeight = screenHeight;
+
+    // 3. 游戏状态
+    this.isPlaying = true;
+
+    // 4. 开始循环
+    this.bindLoop = this.loop.bind(this);
+    this.restart();
+  }
+
+  restart() {
+    // 这里后续会初始化玩家、敌人管理器等
+    console.log("游戏启动: 横屏模式", this.screenWidth, "x", this.screenHeight);
+    
+    window.requestAnimationFrame(this.bindLoop, this.canvas);
   }
 
   /**
-   * 开始或重启游戏
+   * 每一帧的逻辑更新
    */
-  start() {
-    GameGlobal.databus.reset(); // 重置数据
-    this.player.init(); // 重置玩家状态
-    cancelAnimationFrame(this.aniId); // 清除上一局的动画
-    this.aniId = requestAnimationFrame(this.loop.bind(this)); // 开始新的动画循环
+  update() {
+    // 比如：player.update()
+    // enemyManager.update()
   }
 
   /**
-   * 随着帧数变化的敌机生成逻辑
-   * 帧数取模定义成生成的频率
-   */
-  enemyGenerate() {
-    // 每30帧生成一个敌机
-    if (GameGlobal.databus.frame % ENEMY_GENERATE_INTERVAL === 0) {
-      const enemy = GameGlobal.databus.pool.getItemByClass('enemy', Enemy); // 从对象池获取敌机实例
-      enemy.init(); // 初始化敌机
-      GameGlobal.databus.enemys.push(enemy); // 将敌机添加到敌机数组中
-    }
-  }
-
-  /**
-   * 全局碰撞检测
-   */
-  collisionDetection() {
-    // 检测子弹与敌机的碰撞
-    GameGlobal.databus.bullets.forEach((bullet) => {
-      for (let i = 0, il = GameGlobal.databus.enemys.length; i < il; i++) {
-        const enemy = GameGlobal.databus.enemys[i];
-
-        // 如果敌机存活并且发生了发生碰撞
-        if (enemy.isCollideWith(bullet)) {
-          enemy.destroy(); // 销毁敌机
-          bullet.destroy(); // 销毁子弹
-          GameGlobal.databus.score += 1; // 增加分数
-          break; // 退出循环
-        }
-      }
-    });
-
-    // 检测玩家与敌机的碰撞
-    for (let i = 0, il = GameGlobal.databus.enemys.length; i < il; i++) {
-      const enemy = GameGlobal.databus.enemys[i];
-
-      // 如果玩家与敌机发生碰撞
-      if (this.player.isCollideWith(enemy)) {
-        this.player.destroy(); // 销毁玩家飞机
-        GameGlobal.databus.gameOver(); // 游戏结束
-
-        break; // 退出循环
-      }
-    }
-  }
-
-  /**
-   * canvas重绘函数
-   * 每一帧重新绘制所有的需要展示的元素
+   * 每一帧的画面渲染
    */
   render() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height); // 清空画布
+    // 清空屏幕 (黑色背景)
+    this.ctx.fillStyle = '#333333';
+    this.ctx.fillRect(0, 0, this.screenWidth, this.screenHeight);
 
-    this.bg.render(ctx); // 绘制背景
-    this.player.render(ctx); // 绘制玩家飞机
-    GameGlobal.databus.bullets.forEach((item) => item.render(ctx)); // 绘制所有子弹
-    GameGlobal.databus.enemys.forEach((item) => item.render(ctx)); // 绘制所有敌机
-    this.gameInfo.render(ctx); // 绘制游戏UI
-    GameGlobal.databus.animations.forEach((ani) => {
-      if (ani.isPlaying) {
-        ani.aniRender(ctx); // 渲染动画
-      }
-    }); // 绘制所有动画
+    // 测试绘制：画一个中心文字
+    this.ctx.fillStyle = '#ffffff';
+    this.ctx.font = '20px Arial';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText('Elemental Survivor - Dev Build', this.screenWidth / 2, this.screenHeight / 2);
   }
 
-  // 游戏逻辑更新主函数
-  update() {
-    GameGlobal.databus.frame++; // 增加帧数
-
-    if (GameGlobal.databus.isGameOver) {
-      return;
-    }
-
-    this.bg.update(); // 更新背景
-    this.player.update(); // 更新玩家
-    // 更新所有子弹
-    GameGlobal.databus.bullets.forEach((item) => item.update());
-    // 更新所有敌机
-    GameGlobal.databus.enemys.forEach((item) => item.update());
-
-    this.enemyGenerate(); // 生成敌机
-    this.collisionDetection(); // 检测碰撞
-  }
-
-  // 实现游戏帧循环
+  /**
+   * 游戏主循环
+   */
   loop() {
-    this.update(); // 更新游戏逻辑
-    this.render(); // 渲染游戏画面
-
-    // 请求下一帧动画
-    this.aniId = requestAnimationFrame(this.loop.bind(this));
+    if (this.isPlaying) {
+      this.update();
+      this.render();
+      window.requestAnimationFrame(this.bindLoop, this.canvas);
+    }
   }
 }
