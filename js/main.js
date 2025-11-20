@@ -1,63 +1,110 @@
-import Joystick from './runtime/joystick.js'
-import Hero from './player/hero.js'
-import Enemy from './npc/enemy.js'
+// 头部引入
+import ElementalSystem from './core/elemental.js';
+import Hero from './player/hero.js';
+import Enemy from './npc/enemy.js';
+import Joystick from './runtime/joystick.js';
+import { SCREEN_WIDTH, SCREEN_HEIGHT } from './render.js';
 
 export default class Main {
   constructor() {
-    // ... (保留之前的 Canvas 初始化) ...
-    this.canvas = wx.createCanvas();
+    // 获取 canvas 和 context
+    this.canvas = GameGlobal.canvas;
     this.ctx = this.canvas.getContext('2d');
-    const { screenWidth, screenHeight, devicePixelRatio } = wx.getSystemInfoSync();
-    this.canvas.width = screenWidth * devicePixelRatio;
-    this.canvas.height = screenHeight * devicePixelRatio;
-    this.ctx.scale(devicePixelRatio, devicePixelRatio);
-    this.screenWidth = screenWidth;
-    this.screenHeight = screenHeight;
-
-    // 初始化组件
-    this.joystick = new Joystick(screenWidth, screenHeight);
-    this.hero = new Hero(screenWidth, screenHeight);
     
-    // 实体列表
+    // 初始化游戏对象
+    this.hero = new Hero(SCREEN_WIDTH, SCREEN_HEIGHT);
     this.enemies = [];
     this.bullets = [];
+    this.joystick = new Joystick(SCREEN_WIDTH, SCREEN_HEIGHT);
     
-    // 游戏控制
-    this.frameCount = 0;
-    this.isPlaying = true;
-
-    this.initTouchEvents();
-    this.bindLoop = this.loop.bind(this);
-    this.restart();
+    // 游戏状态
+    this.enemySpawnTimer = 0;
+    this.enemySpawnInterval = 60; // 每60帧生成一个敌人
+    
+    // 绑定触摸事件
+    this.bindTouchEvents();
+    
+    // 开始游戏循环
+    this.gameLoop();
   }
-
-  initTouchEvents() {
-    wx.onTouchStart((e) => this.joystick.onTouchStart(e));
-    wx.onTouchMove((e) => this.joystick.onTouchMove(e));
-    wx.onTouchEnd((e) => this.joystick.onTouchEnd(e));
+  
+  bindTouchEvents() {
+    wx.onTouchStart((e) => {
+      this.joystick.onTouchStart(e);
+    });
+    
+    wx.onTouchMove((e) => {
+      this.joystick.onTouchMove(e);
+    });
+    
+    wx.onTouchEnd((e) => {
+      this.joystick.onTouchEnd(e);
+    });
   }
-
-  restart() {
-    this.enemies = [];
-    this.bullets = [];
-    this.frameCount = 0;
-    window.requestAnimationFrame(this.bindLoop, this.canvas);
-  }
-
-  /**
-   * 生成敌人逻辑
-   */
-  spawnEnemy() {
-    // 每 60 帧 (约1秒) 生成一个敌人
-    if (this.frameCount % 60 === 0) {
-      const enemy = new Enemy(this.screenWidth, this.screenHeight);
-      this.enemies.push(enemy);
+  
+  update() {
+    // 更新摇杆输入
+    const inputVector = this.joystick.getInputVector();
+    
+    // 更新主角
+    this.hero.update(inputVector);
+    
+    // 主角攻击
+    const newBullet = this.hero.tryAttack(this.enemies);
+    if (newBullet) {
+      this.bullets.push(newBullet);
     }
+    
+    // 更新子弹
+    for (let bullet of this.bullets) {
+      bullet.update();
+    }
+    // 清理无效子弹
+    this.bullets = this.bullets.filter(b => b.active);
+    
+    // 生成敌人
+    this.enemySpawnTimer++;
+    if (this.enemySpawnTimer >= this.enemySpawnInterval) {
+      this.enemySpawnTimer = 0;
+      this.enemies.push(new Enemy(SCREEN_WIDTH, SCREEN_HEIGHT));
+    }
+    
+    // 更新敌人
+    for (let enemy of this.enemies) {
+      enemy.update(this.hero);
+    }
+    // 清理无效敌人
+    this.enemies = this.enemies.filter(e => e.active);
+    
+    // 检测碰撞
+    this.checkCollisions();
   }
-
-  /**
-   * 碰撞检测逻辑 (AABB 简单矩形碰撞)
-   */
+  
+  render() {
+    // 清空画布
+    this.ctx.clearRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    
+    // 绘制背景
+    this.ctx.fillStyle = '#2c3e50';
+    this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    
+    // 绘制敌人
+    for (let enemy of this.enemies) {
+      enemy.render(this.ctx);
+    }
+    
+    // 绘制子弹
+    for (let bullet of this.bullets) {
+      bullet.render(this.ctx);
+    }
+    
+    // 绘制主角
+    this.hero.render(this.ctx);
+    
+    // 绘制摇杆
+    this.joystick.render(this.ctx);
+  }
+  
   checkCollisions() {
     // 子弹打敌人
     for (let bullet of this.bullets) {
@@ -66,99 +113,54 @@ export default class Main {
       for (let enemy of this.enemies) {
         if (!enemy.active) continue;
 
-        // 简单的距离检测 (半径和)
         const dx = bullet.x - enemy.x;
         const dy = bullet.y - enemy.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         
-        // 假设判定半径是 20
         if (dist < 20) {
           bullet.active = false;
-          enemy.hp--;
-          // 可以在这里加飘字效果
-          break; // 一颗子弹只打一个怪
+          
+          // --- 核心修改：调用元素系统计算伤害 ---
+          const baseDamage = 1; 
+          const result = ElementalSystem.calculate(
+            enemy.attachedElement, // 敌人当前的
+            bullet.elementType,    // 子弹带来的
+            baseDamage
+          );
+          
+          // 扣血
+          enemy.hp -= result.damage;
+          
+          // 更新敌人身上的元素状态
+          enemy.attachedElement = result.remainingElement;
+          
+          // TODO: 如果 result.reaction === 'vaporize'，可以在这里播放一个特效
+          // -----------------------------------
+          
+          break;
         }
       }
     }
-
-    // 敌人碰主角 (这里先不做主角掉血，只打印)
-    for (let enemy of this.enemies) {
-        if (!enemy.active) continue;
-        const dx = enemy.x - this.hero.x;
-        const dy = enemy.y - this.hero.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 30) {
-            // console.log("主角受到伤害！");
-        }
-    }
-  }
-
-  update() {
-    this.frameCount++;
-
-    // 1. 更新主角
-    const input = this.joystick.getInputVector();
-    this.hero.update(input);
-
-    // 2. 主角尝试射击
-    const newBullet = this.hero.tryAttack(this.enemies);
-    if (newBullet) {
-      this.bullets.push(newBullet);
-    }
-
-    // 3. 更新敌人
-    this.spawnEnemy();
-    this.enemies.forEach(enemy => enemy.update(this.hero));
-
-    // 4. 更新子弹
-    this.bullets.forEach(bullet => bullet.update());
-
-    // 5. 碰撞检测
-    this.checkCollisions();
-
-    // 6. 清理死亡对象 (简单的 filter，性能以后优化)
-    this.enemies = this.enemies.filter(e => e.active);
-    this.bullets = this.bullets.filter(b => b.active);
-  }
-
-  render() {
-    this.ctx.fillStyle = '#333333';
-    this.ctx.fillRect(0, 0, this.screenWidth, this.screenHeight);
-
-    // 绘制参考网格
-    this.drawGrid();
-
-    // 绘制实体
-    this.enemies.forEach(e => e.render(this.ctx));
-    this.bullets.forEach(b => b.render(this.ctx));
-    this.hero.render(this.ctx);
-    this.joystick.render(this.ctx);
     
-    // UI：敌人数量
-    this.ctx.fillStyle = '#fff';
-    this.ctx.font = '16px Arial';
-    this.ctx.textAlign = 'left';
-    this.ctx.fillText(`Enemies: ${this.enemies.length}`, 10, 30);
-  }
-
-  drawGrid() {
-     // ... (保持不变) ...
-     this.ctx.strokeStyle = '#444';
-     this.ctx.lineWidth = 1;
-     const gridSize = 50;
-     for (let x = 0; x < this.screenWidth; x += gridSize) {
-       this.ctx.beginPath(); this.ctx.moveTo(x, 0); this.ctx.lineTo(x, this.screenHeight); this.ctx.stroke();
-     }
-     for (let y = 0; y < this.screenHeight; y += gridSize) {
-       this.ctx.beginPath(); this.ctx.moveTo(0, y); this.ctx.lineTo(this.screenWidth, y); this.ctx.stroke();
-     }
-  }
-
-  loop() {
-    if (this.isPlaying) {
-      this.update();
-      this.render();
-      window.requestAnimationFrame(this.bindLoop, this.canvas);
+    // 敌人碰主角
+    for (let enemy of this.enemies) {
+      if (!enemy.active) continue;
+      
+      const dx = enemy.x - this.hero.x;
+      const dy = enemy.y - this.hero.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      
+      if (dist < 30) {
+        // 游戏结束或扣血逻辑
+        // TODO: 实现游戏结束逻辑
+      }
     }
+  }
+  
+  gameLoop() {
+    this.update();
+    this.render();
+    const raf = wx.requestAnimationFrame || requestAnimationFrame;
+    raf(() => this.gameLoop());
   }
 }

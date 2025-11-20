@@ -1,7 +1,11 @@
+import { ElementType } from '../base/constants.js';
+
 export default class Bullet {
-  constructor(x, y, targetX, targetY) {
+  // 新增 elementType 参数，默认为 NONE
+  constructor(x, y, targetX, targetY, elementType = ElementType.NONE) {
     this.x = x;
     this.y = y;
+    this.elementType = elementType; // 记录子弹元素
     this.width = 10;
     this.height = 10;
     this.speed = 10;
@@ -30,7 +34,14 @@ export default class Bullet {
   render(ctx) {
     if (!this.active) return;
     
-    ctx.fillStyle = '#ffff00'; // 黄色子弹
+    // 根据元素改变子弹颜色
+    if (this.elementType === ElementType.FIRE) {
+      ctx.fillStyle = '#ff0000'; // 火子弹红色
+    } else if (this.elementType === ElementType.WATER) {
+      ctx.fillStyle = '#0000ff'; // 水子弹蓝色
+    } else {
+      ctx.fillStyle = '#ffff00'; // 普通子弹黄色
+    }
     ctx.beginPath();
     ctx.arc(this.x, this.y, 5, 0, Math.PI * 2);
     ctx.fill();
