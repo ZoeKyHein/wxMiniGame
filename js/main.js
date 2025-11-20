@@ -2,6 +2,7 @@ import Joystick from './runtime/joystick.js';
 import Hero from './player/hero.js';
 import Enemy from './npc/enemy.js';
 import Bullet from './weapon/bullet.js';
+import EnemyBullet from './weapon/enemy_bullet.js'; // 引入
 import ExpOrb from './item/exp_orb.js';
 import FloatingText from './ui/floating_text.js';
 import ElementalSystem from './core/elemental.js';
@@ -11,7 +12,8 @@ import { ElementType, ReactionType } from './base/constants.js';
 const GameState = {
   PLAYING: 'playing',
   LEVEL_UP: 'level_up',
-  GAME_OVER: 'game_over'
+  GAME_OVER: 'game_over',
+  VICTORY: 'victory' // 新增胜利状态
 };
 
 export default class Main {
@@ -31,6 +33,7 @@ export default class Main {
     this.hero = new Hero(screenWidth, screenHeight);
     this.enemies = [];
     this.bullets = [];
+    this.enemyBullets = []; // 新增：敌人子弹列表
     this.orbs = []; // 经验球列表
     this.floatingTexts = []; // 浮动文字列表
 
@@ -44,10 +47,20 @@ export default class Main {
     
     // 升级选项 (临时存储)
     this.upgradeOptions = [];
+    
+    // 时间控制
+    this.totalTime = 90; // 改成 90秒 (1分半) 方便测试 Boss
+    this.currentTime = 0;     // 当前经过时间 (秒)
+    this.lastTime = Date.now();
+    this.bossSpawned = false; // 标记 Boss 是否已生成
 
     this.initTouchEvents();
     this.bindLoop = this.loop.bind(this);
     this.restart();
+    
+    // --- 补上这一行，启动引擎！---
+    const raf = wx.requestAnimationFrame || requestAnimationFrame;
+    raf(this.bindLoop, this.canvas);
   }
 
   initTouchEvents() {
@@ -56,6 +69,8 @@ export default class Main {
         this.joystick.onTouchStart(e);
       } else if (this.state === GameState.LEVEL_UP) {
         this.handleLevelUpTouch(e);
+      } else if (this.state === GameState.GAME_OVER || this.state === GameState.VICTORY) {
+        this.restart(); // 点击重开
       }
     });
     
@@ -75,22 +90,57 @@ export default class Main {
   restart() {
     this.enemies = [];
     this.bullets = [];
+    this.enemyBullets = []; // 清空
     this.orbs = [];
     this.floatingTexts = [];
+    this.hero = new Hero(this.screenWidth, this.screenHeight); // 重置主角
     this.frameCount = 0;
     this.state = GameState.PLAYING;
     this.level = 1;
     this.currentExp = 0;
     this.maxExp = 50;
     
-    const raf = wx.requestAnimationFrame || requestAnimationFrame;
-    raf(this.bindLoop, this.canvas);
+    this.currentTime = 0;
+    this.lastTime = Date.now();
+    this.bossSpawned = false;
   }
 
   spawnEnemy() {
-    if (this.frameCount % 60 === 0) {
-      const enemy = new Enemy(this.screenWidth, this.screenHeight);
-      this.enemies.push(enemy);
+    // Boss 阶段不刷小怪，或者少刷
+    if (this.bossSpawned) return; 
+
+    let spawnRate = 60;
+    if (this.currentTime > 30) spawnRate = 40;
+
+    if (this.frameCount % spawnRate === 0) {
+      this.enemies.push(new Enemy(this.screenWidth, this.screenHeight, 'normal'));
+    }
+
+    // 精英怪：第 30 秒
+    if (this.currentTime === 30 && this.frameCount % 60 === 0) {
+      this.floatingTexts.push(new FloatingText(
+        this.screenWidth / 2, 
+        100, 
+        "ELITE APPEARED!", 
+        '#8e44ad',
+        30
+      ));
+      this.enemies.push(new Enemy(this.screenWidth, this.screenHeight, 'elite'));
+    }
+
+    // Boss：第 60 秒
+    if (this.currentTime === 60 && !this.bossSpawned) {
+      this.bossSpawned = true;
+      this.enemies = []; // (可选) 清空小怪，单挑 Boss
+      this.floatingTexts.push(new FloatingText(
+        this.screenWidth / 2, 
+        150, 
+        "BOSS WARNING!", 
+        '#f1c40f',
+        35
+      ));
+      this.enemies.push(new Enemy(this.screenWidth, this.screenHeight, 'boss'));
+      console.log("Boss 生成！");
     }
   }
 
@@ -180,9 +230,9 @@ export default class Main {
       for (let enemy of this.enemies) {
         if (!enemy.active) continue;
         const dist = Math.sqrt((bullet.x - enemy.x)**2 + (bullet.y - enemy.y)**2);
-        if (dist < 20) {
+        if (dist < (enemy.width/2 + 5)) { // 稍微调整碰撞半径适应不同大小的怪
           bullet.active = false;
-          const baseDamage = 1; // 基础伤害
+          const baseDamage = 2; // 基础伤害
           const result = ElementalSystem.calculate(enemy.attachedElement, bullet.elementType, baseDamage);
           enemy.hp -= result.damage;
           enemy.attachedElement = result.remainingElement;
@@ -216,15 +266,40 @@ export default class Main {
           
           if (enemy.hp <= 0) {
             enemy.active = false;
-            // --- 掉落经验球 ---
-            this.orbs.push(new ExpOrb(enemy.x, enemy.y, 20));
+            // 根据敌人类型掉落经验
+            let expValue = 20;
+            if (enemy.type === 'elite') expValue = 100;
+            if (enemy.type === 'boss') expValue = 1000; // Boss 巨额经验
+            this.orbs.push(new ExpOrb(enemy.x, enemy.y, expValue));
+            
+            // 如果 Boss 死了，直接胜利 (延迟一点)
+            if (enemy.type === 'boss') {
+              setTimeout(() => { this.state = GameState.VICTORY; }, 1000);
+            }
           }
           break;
         }
       }
     }
 
-    // 2. 玩家吃经验球
+    // 2. 敌人子弹打玩家 (新增)
+    for (let eb of this.enemyBullets) {
+      if (!eb.active) continue;
+      const dist = Math.sqrt((eb.x - this.hero.x)**2 + (eb.y - this.hero.y)**2);
+      if (dist < 15) { // 判定范围
+        eb.active = false;
+        this.hero.takeDamage(eb.damage);
+        this.floatingTexts.push(new FloatingText(
+          this.hero.x, 
+          this.hero.y, 
+          `-${eb.damage}`, 
+          '#e74c3c',
+          20
+        ));
+      }
+    }
+
+    // 3. 玩家吃经验球
     for (let orb of this.orbs) {
       if (!orb.active) continue;
       const dist = Math.sqrt((orb.x - this.hero.x)**2 + (orb.y - this.hero.y)**2);
@@ -236,7 +311,16 @@ export default class Main {
       }
     }
     
-    // 3. 敌人撞玩家 (略)
+    // 4. 敌人撞玩家
+    for (let enemy of this.enemies) {
+      if (!enemy.active) continue;
+      
+      const dist = Math.sqrt((enemy.x - this.hero.x)**2 + (enemy.y - this.hero.y)**2);
+      // 简单的圆形碰撞 (假设主角半径20, 敌人半径 width/2)
+      if (dist < (20 + enemy.width / 2)) {
+        this.hero.takeDamage(enemy.damage);
+      }
+    }
   }
   
   /**
@@ -265,8 +349,16 @@ export default class Main {
         
         if (enemy.hp <= 0) {
           enemy.active = false;
-          // 掉落经验球
-          this.orbs.push(new ExpOrb(enemy.x, enemy.y, 20));
+          // 根据敌人类型掉落经验
+          let expValue = 20;
+          if (enemy.type === 'elite') expValue = 100;
+          if (enemy.type === 'boss') expValue = 1000; // Boss 巨额经验
+          this.orbs.push(new ExpOrb(enemy.x, enemy.y, expValue));
+          
+          // 如果 Boss 死了，直接胜利
+          if (enemy.type === 'boss') {
+            setTimeout(() => { this.state = GameState.VICTORY; }, 1000);
+          }
         }
       }
     }
@@ -285,6 +377,23 @@ export default class Main {
     // 如果不是 PLAYING 状态，不更新游戏逻辑
     if (this.state !== GameState.PLAYING) return;
 
+    // 计算时间
+    const now = Date.now();
+    const dt = (now - this.lastTime) / 1000;
+    if (dt >= 1) {
+      this.currentTime += 1;
+      this.lastTime = now;
+    }
+    
+    // 检查游戏结束
+    if (this.hero.isDead) {
+      this.state = GameState.GAME_OVER;
+    }
+    // 检查胜利 (时间到了且 Boss 还没出，或者 Boss 已死)
+    if (this.currentTime >= this.totalTime && !this.bossSpawned) {
+      this.state = GameState.VICTORY; 
+    }
+
     this.frameCount++;
     const input = this.joystick.getInputVector();
     this.hero.update(input);
@@ -294,8 +403,16 @@ export default class Main {
 
     this.spawnEnemy();
     
-    this.enemies.forEach(e => e.update(this.hero));
+    // 敌人生成与更新（Boss 会返回子弹数组）
+    this.enemies.forEach(e => {
+      const bullets = e.update(this.hero);
+      if (bullets && bullets.length > 0) {
+        this.enemyBullets.push(...bullets);
+      }
+    });
+    
     this.bullets.forEach(b => b.update());
+    this.enemyBullets.forEach(eb => eb.update()); // 更新敌人子弹
     this.orbs.forEach(o => o.update(this.hero)); // 更新经验球
     this.floatingTexts.forEach(ft => ft.update()); // 更新浮动文字
 
@@ -304,6 +421,7 @@ export default class Main {
     // 清理
     this.enemies = this.enemies.filter(e => e.active);
     this.bullets = this.bullets.filter(b => b.active);
+    this.enemyBullets = this.enemyBullets.filter(eb => eb.active);
     this.orbs = this.orbs.filter(o => o.active);
     this.floatingTexts = this.floatingTexts.filter(ft => ft.active);
   }
@@ -327,22 +445,58 @@ export default class Main {
     if (this.state === GameState.LEVEL_UP) {
       this.renderLevelUpUI();
     }
+    if (this.state === GameState.GAME_OVER) {
+      this.renderGameOverUI();
+    }
+    if (this.state === GameState.VICTORY) {
+      this.renderVictoryUI();
+    }
   }
 
   renderHUD() {
-    // 经验条背景
+    // 1. 经验条 (顶部)
     this.ctx.fillStyle = '#000';
     this.ctx.fillRect(0, 0, this.screenWidth, 10);
-    // 经验条进度
     this.ctx.fillStyle = '#2ecc71';
-    const pct = Math.min(1, this.currentExp / this.maxExp);
-    this.ctx.fillRect(0, 0, this.screenWidth * pct, 10);
+    const expPct = Math.min(1, this.currentExp / this.maxExp);
+    this.ctx.fillRect(0, 0, this.screenWidth * expPct, 10);
     
-    // 等级文字
+    // 2. 倒计时 (顶部居中)
+    const remaining = this.totalTime - this.currentTime;
+    const mins = Math.floor(remaining / 60).toString().padStart(2, '0');
+    const secs = (remaining % 60).toString().padStart(2, '0');
     this.ctx.fillStyle = '#fff';
     this.ctx.font = '20px Arial';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText(`${mins}:${secs}`, this.screenWidth / 2, 35);
+    
+    // 3. 等级文字 (右上角)
     this.ctx.textAlign = 'right';
     this.ctx.fillText(`LV. ${this.level}`, this.screenWidth - 10, 35);
+    
+    // 4. 血条 (底部中间)
+    const hpBarWidth = 200;
+    const hpBarHeight = 20;
+    const hpX = (this.screenWidth - hpBarWidth) / 2;
+    const hpY = this.screenHeight - 40;
+    
+    // 背景
+    this.ctx.fillStyle = '#555';
+    this.ctx.fillRect(hpX, hpY, hpBarWidth, hpBarHeight);
+    // 血量
+    this.ctx.fillStyle = '#e74c3c';
+    const hpPct = Math.max(0, this.hero.hp / this.hero.maxHp);
+    this.ctx.fillRect(hpX, hpY, hpBarWidth * hpPct, hpBarHeight);
+    // 边框
+    this.ctx.strokeStyle = '#fff';
+    this.ctx.lineWidth = 2;
+    this.ctx.strokeRect(hpX, hpY, hpBarWidth, hpBarHeight);
+    
+    // 文字
+    this.ctx.fillStyle = '#fff';
+    this.ctx.font = '14px Arial';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText(`${Math.ceil(this.hero.hp)}/${this.hero.maxHp}`, this.screenWidth / 2, hpY + 15);
   }
 
   renderLevelUpUI() {
@@ -391,8 +545,37 @@ export default class Main {
     this.ctx.textAlign = 'center';
     this.ctx.fillText(text, x, y);
   }
+  
+  renderGameOverUI() {
+    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    this.ctx.fillRect(0, 0, this.screenWidth, this.screenHeight);
+    
+    this.ctx.fillStyle = '#e74c3c';
+    this.ctx.font = 'bold 40px Arial';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText('GAME OVER', this.screenWidth / 2, this.screenHeight / 2 - 20);
+    
+    this.ctx.fillStyle = '#fff';
+    this.ctx.font = '20px Arial';
+    this.ctx.fillText('Tap to Restart', this.screenWidth / 2, this.screenHeight / 2 + 40);
+  }
+  
+  renderVictoryUI() {
+    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    this.ctx.fillRect(0, 0, this.screenWidth, this.screenHeight);
+    
+    this.ctx.fillStyle = '#f1c40f';
+    this.ctx.font = 'bold 40px Arial';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText('VICTORY!', this.screenWidth / 2, this.screenHeight / 2 - 20);
+    
+    this.ctx.fillStyle = '#fff';
+    this.ctx.font = '20px Arial';
+    this.ctx.fillText('You Defeated the Boss!', this.screenWidth / 2, this.screenHeight / 2 + 40);
+  }
 
   loop() {
+    // console.log("Loop is running"); // 如果控制台疯狂刷屏这句话，说明循环是好的，那就是渲染问题
     // 即使暂停也要 requestAnimationFrame 才能维持画面渲染（虽然 update 停了）
     this.update();
     this.render();
