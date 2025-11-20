@@ -2,12 +2,16 @@ import { ElementType } from '../base/constants.js';
 import ElementalSystem from '../core/elemental.js';
 import EnemyBullet from '../weapon/enemy_bullet.js'; // 引入子弹
 
+// 简单的 ID 生成器
+let enemyIdCounter = 0;
+
 export default class Enemy {
   // 新增 type 参数，默认 'normal'
   constructor(screenWidth, screenHeight, type = 'normal') {
+    this.id = enemyIdCounter++; // 唯一 ID
     this.screenWidth = screenWidth;
     this.screenHeight = screenHeight;
-    this.type = type; // 'normal' | 'elite' | 'boss'
+    this.type = type; // 'normal' | 'elite' | 'boss' | 'charger' (新增)
     
     this.initPosition();
     this.active = true;
@@ -32,6 +36,17 @@ export default class Enemy {
       this.hp = 50;
       this.color = '#8e44ad';
       this.damage = 20;
+    } else if (this.type === 'charger') { // 新增冲锋怪
+      this.width = 35;
+      this.height = 35;
+      this.speed = 3.5;
+      this.hp = 8;
+      this.color = '#e67e22'; // 橙色
+      this.damage = 15;
+      // 冲锋状态机: 0=追击, 1=蓄力, 2=冲锋, 3=硬直
+      this.chargeState = 0;
+      this.chargeTimer = 0;
+      this.chargeDir = {x: 0, y: 0}; // 冲锋方向
     } else {
       this.width = 30;
       this.height = 30;
@@ -40,6 +55,14 @@ export default class Enemy {
       this.color = '#e74c3c'; // 红色
       this.damage = 10;
     }
+    
+    // 保存原始速度，用于恢复
+    this.baseSpeed = this.speed;
+    
+    // 新增：状态控制
+    this.freezeTimer = 0; // 冻结倒计时
+    this.burnTimer = 0;    // 燃烧倒计时
+    this.burnDamage = 0;   // 燃烧每跳伤害
   }
 
   // ... (保留 initPosition 和 update) ...
@@ -57,13 +80,46 @@ export default class Enemy {
   update(player) {
     if (this.hp <= 0) { this.active = false; return null; }
 
-    // 移动
+    // 1. 处理燃烧 (DoT)
+    if (this.burnTimer > 0) {
+      this.burnTimer--;
+      // 每 30 帧 (约0.5秒) 跳一次伤害
+      if (this.burnTimer % 30 === 0) {
+        this.hp -= this.burnDamage;
+      }
+      // 烧死了
+      if (this.hp <= 0) {
+        this.active = false;
+        return { diedByDot: true }; // 告诉 main 是被烧死的
+      }
+    }
+
+    // 2. 处理冻结状态
+    if (this.freezeTimer > 0) {
+      this.freezeTimer--;
+      // 冻结时无法移动，也无法攻击
+      return null;
+    }
+
+    // 2. 处理减速 (冰元素附着)
+    let currentSpeed = this.baseSpeed;
+    if (this.attachedElement === ElementType.ICE) {
+      currentSpeed = this.baseSpeed * 0.5; // 减速 50%
+    }
+
+    // 冲锋怪特殊逻辑
+    if (this.type === 'charger') {
+      this.updateCharger(player, currentSpeed);
+      return null;
+    }
+
+    // 3. 普通移动逻辑
     const dx = player.x - this.x;
     const dy = player.y - this.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist > 0) {
-      this.x += (dx / dist) * this.speed;
-      this.y += (dy / dist) * this.speed;
+      this.x += (dx / dist) * currentSpeed;
+      this.y += (dy / dist) * currentSpeed;
     }
 
     // Boss 射击逻辑
@@ -71,10 +127,59 @@ export default class Enemy {
       this.shootTimer++;
       if (this.shootTimer >= this.shootInterval) {
         this.shootTimer = 0;
-        return this.shoot(player);
+        const bullets = this.shoot(player);
+        return { bullets: bullets };
       }
     }
     return null;
+  }
+  
+  updateCharger(player, currentSpeed) {
+    // 状态机
+    if (this.chargeState === 0) { // 追击 (Chase)
+      const dx = player.x - this.x;
+      const dy = player.y - this.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      
+      // 靠近到一定距离 (例如 200) 开始蓄力
+      if (dist < 200) {
+        this.chargeState = 1;
+        this.chargeTimer = 40; // 蓄力 40帧 (约0.6秒)
+      } else {
+        this.x += (dx / dist) * currentSpeed;
+        this.y += (dy / dist) * currentSpeed;
+      }
+    } 
+    else if (this.chargeState === 1) { // 蓄力 (Prepare)
+      this.chargeTimer--;
+      if (this.chargeTimer <= 0) {
+        this.chargeState = 2;
+        this.chargeTimer = 20; // 冲锋持续 20帧
+        // 锁定方向
+        const dx = player.x - this.x;
+        const dy = player.y - this.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        this.chargeDir = { x: dx/dist, y: dy/dist };
+      }
+    }
+    else if (this.chargeState === 2) { // 冲锋 (Dash)
+      this.chargeTimer--;
+      // 极快速度移动
+      const dashSpeed = currentSpeed * 4; 
+      this.x += this.chargeDir.x * dashSpeed;
+      this.y += this.chargeDir.y * dashSpeed;
+      
+      if (this.chargeTimer <= 0) {
+        this.chargeState = 3;
+        this.chargeTimer = 60; // 硬直/休息 1秒
+      }
+    }
+    else if (this.chargeState === 3) { // 硬直 (Cooldown)
+      this.chargeTimer--;
+      if (this.chargeTimer <= 0) {
+        this.chargeState = 0; // 回到追击
+      }
+    }
   }
 
   shoot(player) {
@@ -109,8 +214,36 @@ export default class Enemy {
       ctx.strokeRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
     }
 
-    ctx.fillStyle = this.color;
+    // 冲锋怪蓄力时变白/闪烁
+    if (this.type === 'charger' && this.chargeState === 1) {
+      if (Math.floor(Date.now() / 50) % 2 === 0) {
+        ctx.fillStyle = '#fff';
+      } else {
+        ctx.fillStyle = this.color;
+      }
+    } else {
+      ctx.fillStyle = this.color;
+    }
+    
     ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
+
+    // 燃烧视觉效果 (橙色滤镜)
+    if (this.burnTimer > 0) {
+      ctx.save();
+      ctx.globalAlpha = 0.6;
+      ctx.fillStyle = '#e67e22'; // 橙色
+      ctx.fillRect(this.x - this.width/2 - 2, this.y - this.height/2 - 2, this.width + 4, this.height + 4);
+      ctx.restore();
+    }
+
+    // 冻结时的视觉效果 (覆盖一层浅蓝边框)
+    if (this.freezeTimer > 0) {
+      ctx.save();
+      ctx.strokeStyle = '#74b9ff';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(this.x - this.width/2, this.y - this.height/2, this.width, this.height);
+      ctx.restore();
+    }
 
     // 元素附着点
     if (this.attachedElement !== ElementType.NONE) {

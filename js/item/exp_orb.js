@@ -11,14 +11,17 @@ export default class ExpOrb {
   }
 
   update(player) {
-    // 简单的磁吸逻辑：当玩家足够近时，自动飞向玩家
     const dx = player.x - this.x;
     const dy = player.y - this.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
 
-    if (dist < 100) { // 100像素内自动吸附
-      this.x += (dx / dist) * 8; // 飞行速度
-      this.y += (dy / dist) * 8;
+    // 使用 player.pickupRange
+    // 基础吸附距离 30，加上玩家的磁吸属性
+    if (dist < (30 + player.pickupRange)) {
+      // 距离越近吸得越快，且可以被 pickupRange 加速
+      const speed = 8 + (player.pickupRange / 20); 
+      this.x += (dx / dist) * speed;
+      this.y += (dy / dist) * speed;
     }
   }
 

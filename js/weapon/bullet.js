@@ -18,6 +18,12 @@ export default class Bullet {
     
     this.velocityX = (dx / dist) * this.speed;
     this.velocityY = (dy / dist) * this.speed;
+    
+    this.isCrit = false; // 默认不暴击
+    
+    // 新增：穿透逻辑
+    this.pierce = 0; // 默认穿透次数 (0代表打中1个就死，1代表能穿过1个打中2个)
+    this.hitList = []; // 记录已经打中过的敌人 ID (防止重复伤害)
   }
 
   update() {
@@ -41,11 +47,16 @@ export default class Bullet {
       ctx.fillStyle = '#0000ff'; // 水子弹蓝色
     } else if (this.elementType === ElementType.LIGHTNING) {
       ctx.fillStyle = '#f39c12'; // 雷子弹橙色/金色
+    } else if (this.elementType === ElementType.ICE) {
+      ctx.fillStyle = '#74b9ff'; // 冰子弹浅蓝
     } else {
       ctx.fillStyle = '#ffff00'; // 普通子弹黄色
     }
+    
     ctx.beginPath();
-    ctx.arc(this.x, this.y, 5, 0, Math.PI * 2);
+    // 如果暴击，子弹画大一点
+    const r = this.isCrit ? 7 : 5;
+    ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
     ctx.fill();
   }
 }

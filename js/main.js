@@ -2,18 +2,20 @@ import Joystick from './runtime/joystick.js';
 import Hero from './player/hero.js';
 import Enemy from './npc/enemy.js';
 import Bullet from './weapon/bullet.js';
-import EnemyBullet from './weapon/enemy_bullet.js'; // 引入
+import EnemyBullet from './weapon/enemy_bullet.js';
 import ExpOrb from './item/exp_orb.js';
 import FloatingText from './ui/floating_text.js';
+import Particle from './runtime/particle.js'; // 新增引入
 import ElementalSystem from './core/elemental.js';
 import { ElementType, ReactionType } from './base/constants.js';
 
 // 游戏状态枚举
 const GameState = {
+  START: 'start', // 新增开始界面状态
   PLAYING: 'playing',
   LEVEL_UP: 'level_up',
   GAME_OVER: 'game_over',
-  VICTORY: 'victory' // 新增胜利状态
+  VICTORY: 'victory'
 };
 
 export default class Main {
@@ -30,47 +32,33 @@ export default class Main {
 
     // 实体
     this.joystick = new Joystick(screenWidth, screenHeight);
-    this.hero = new Hero(screenWidth, screenHeight);
-    this.enemies = [];
-    this.bullets = [];
-    this.enemyBullets = []; // 新增：敌人子弹列表
-    this.orbs = []; // 经验球列表
-    this.floatingTexts = []; // 浮动文字列表
+    
+    // 实体列表（在 restart 里初始化）
+    this.particles = []; // 新增粒子列表
 
-    // 游戏数据
-    this.frameCount = 0;
-    this.state = GameState.PLAYING;
-    
-    this.level = 1;
-    this.currentExp = 0;
-    this.maxExp = 50; // 第一级只需要50经验
-    
-    // 升级选项 (临时存储)
-    this.upgradeOptions = [];
-    
-    // 时间控制
-    this.totalTime = 90; // 改成 90秒 (1分半) 方便测试 Boss
-    this.currentTime = 0;     // 当前经过时间 (秒)
-    this.lastTime = Date.now();
-    this.bossSpawned = false; // 标记 Boss 是否已生成
+    // 记录最高分 (本地存储)
+    this.bestTime = wx.getStorageSync('bestTime') || 0;
+
+    this.state = GameState.START; // 默认进入标题页
 
     this.initTouchEvents();
     this.bindLoop = this.loop.bind(this);
-    this.restart();
     
-    // --- 补上这一行，启动引擎！---
+    // 不再自动调用 restart，而是等待点击
     const raf = wx.requestAnimationFrame || requestAnimationFrame;
     raf(this.bindLoop, this.canvas);
   }
 
   initTouchEvents() {
     wx.onTouchStart((e) => {
-      if (this.state === GameState.PLAYING) {
+      if (this.state === GameState.START) {
+        this.restart(); // 点击标题开始游戏
+      } else if (this.state === GameState.PLAYING) {
         this.joystick.onTouchStart(e);
       } else if (this.state === GameState.LEVEL_UP) {
         this.handleLevelUpTouch(e);
       } else if (this.state === GameState.GAME_OVER || this.state === GameState.VICTORY) {
-        this.restart(); // 点击重开
+        this.state = GameState.START; // 游戏结束点击回标题
       }
     });
     
@@ -88,21 +76,39 @@ export default class Main {
   }
 
   restart() {
+    this.hero = new Hero(this.screenWidth, this.screenHeight);
     this.enemies = [];
     this.bullets = [];
-    this.enemyBullets = []; // 清空
+    this.enemyBullets = [];
     this.orbs = [];
     this.floatingTexts = [];
-    this.hero = new Hero(this.screenWidth, this.screenHeight); // 重置主角
+    this.particles = []; // 清空粒子
+
     this.frameCount = 0;
     this.state = GameState.PLAYING;
     this.level = 1;
     this.currentExp = 0;
     this.maxExp = 50;
-    
+    this.upgradeOptions = [];
+
+    this.totalTime = 90; // 90秒一局
     this.currentTime = 0;
     this.lastTime = Date.now();
     this.bossSpawned = false;
+  }
+  
+  // 辅助：生成爆炸粒子
+  spawnExplosion(x, y, color, count = 10) {
+    for (let i = 0; i < count; i++) {
+      this.particles.push(new Particle(x, y, color));
+    }
+  }
+  
+  saveScore() {
+    if (this.currentTime > this.bestTime) {
+      this.bestTime = this.currentTime;
+      wx.setStorageSync('bestTime', this.bestTime);
+    }
   }
 
   spawnEnemy() {
@@ -113,7 +119,12 @@ export default class Main {
     if (this.currentTime > 30) spawnRate = 40;
 
     if (this.frameCount % spawnRate === 0) {
-      this.enemies.push(new Enemy(this.screenWidth, this.screenHeight, 'normal'));
+      // 20% 几率生成冲锋怪
+      if (Math.random() < 0.2) {
+        this.enemies.push(new Enemy(this.screenWidth, this.screenHeight, 'charger'));
+      } else {
+        this.enemies.push(new Enemy(this.screenWidth, this.screenHeight, 'normal'));
+      }
     }
 
     // 精英怪：第 30 秒
@@ -159,35 +170,55 @@ export default class Main {
 
   triggerLevelUp() {
     this.state = GameState.LEVEL_UP;
-    // 生成3个选项（随机包含元素和属性升级）
-    const allOptions = [
-      { id: 1, label: '火元素附魔', type: ElementType.FIRE, desc: '攻击变为火属性' },
-      { id: 2, label: '水元素附魔', type: ElementType.WATER, desc: '攻击变为水属性' },
-      { id: 3, label: '雷元素附魔', type: ElementType.LIGHTNING, desc: '攻击变为雷属性' },
-      { id: 4, label: '攻速提升', type: 'atk_spd', desc: '射击间隔减少 20%' }
+    
+    const currentFireLv = this.hero.elementLevels[ElementType.FIRE];
+    const currentIceLv = this.hero.elementLevels[ElementType.ICE];
+    const currentWaterLv = this.hero.elementLevels[ElementType.WATER];
+    const currentLightningLv = this.hero.elementLevels[ElementType.LIGHTNING];
+    
+    // 基础池
+    const pool = [
+      { id: 'fire', label: `火元素 (Lv.${currentFireLv+1})`, type: ElementType.FIRE, desc: '升级燃烧伤害', weight: 10 },
+      { id: 'water', label: `水元素 (Lv.${currentWaterLv+1})`, type: ElementType.WATER, desc: '切换/升级水属性', weight: 10 },
+      { id: 'lightning', label: `雷元素 (Lv.${currentLightningLv+1})`, type: ElementType.LIGHTNING, desc: '切换/升级雷属性', weight: 10 },
+      { id: 'ice', label: `冰元素 (Lv.${currentIceLv+1})`, type: ElementType.ICE, desc: '升级冻结时长', weight: 10 },
+      
+      { id: 'multishot', label: '多重射击', type: 'buff_multishot', desc: '子弹数量 +1', weight: 5 },
+      { id: 'pierce', label: '穿透子弹', type: 'buff_pierce', desc: '子弹可穿透 +1 个敌人', weight: 5 },
+      { id: 'magnet', label: '磁铁', type: 'buff_magnet', desc: '拾取范围 +50%', weight: 10 },
+      
+      { id: 'atk_spd', label: '攻速提升', type: 'buff_spd', desc: '射击速度 +15%', weight: 15 },
+      { id: 'crit', label: '暴击率', type: 'buff_crit', desc: '暴击率 +10%', weight: 15 },
+      { id: 'heal', label: '回复生命', type: 'buff_heal', desc: '回复 30% 生命值', weight: 15 }
     ];
     
-    // 随机选择3个选项（确保至少有一个元素选项）
-    const elementOptions = allOptions.filter(opt => 
-      opt.type === ElementType.FIRE || 
-      opt.type === ElementType.WATER || 
-      opt.type === ElementType.LIGHTNING
-    );
-    const otherOptions = allOptions.filter(opt => opt.type === 'atk_spd');
-    
-    // 至少选择一个元素，然后随机填充其他选项
-    const selected = [elementOptions[Math.floor(Math.random() * elementOptions.length)]];
-    const remaining = [...elementOptions.filter(opt => opt.id !== selected[0].id), ...otherOptions];
-    
-    // 随机打乱并选择2个
-    for (let i = remaining.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [remaining[i], remaining[j]] = [remaining[j], remaining[i]];
+    // 新增：圣遗物 (Synergy Passives)
+    // 碎冰：需要有冰元素等级
+    if (this.hero.elementLevels[ElementType.ICE] > 0 && !this.hero.passives.shatter) {
+      pool.push({ id: 'passive_shatter', label: '【被动】碎冰', type: 'passive_shatter', desc: '对冻结敌人必定暴击', weight: 8 });
     }
     
-    this.upgradeOptions = [...selected, ...remaining.slice(0, 2)];
+    // 处刑者：通用
+    if (!this.hero.passives.executioner) {
+      pool.push({ id: 'passive_exec', label: '【被动】处刑者', type: 'passive_exec', desc: '对异常状态敌人伤害+50%', weight: 8 });
+    }
     
-    // 每次升级重置摇杆，防止卡住
+    // 热能激荡：需要火或雷
+    if ((this.hero.elementLevels[ElementType.FIRE] > 0 || this.hero.elementLevels[ElementType.LIGHTNING] > 0) && this.hero.passives.blast_radius === 0) {
+      pool.push({ id: 'passive_blast', label: '【被动】热能激荡', type: 'passive_blast', desc: '爆炸范围 +50%', weight: 8 });
+    }
+
+    // 随机抽取 3 个不重复的选项
+    this.upgradeOptions = [];
+    const tempPool = [...pool];
+    
+    for (let i = 0; i < 3; i++) {
+      if (tempPool.length === 0) break;
+      const randomIndex = Math.floor(Math.random() * tempPool.length);
+      this.upgradeOptions.push(tempPool[randomIndex]);
+      tempPool.splice(randomIndex, 1); // 抽走，防止重复
+    }
+    
     this.joystick.reset();
   }
 
@@ -213,13 +244,41 @@ export default class Main {
   }
 
   applyUpgrade(option) {
-    console.log("选择了升级:", option.label);
-    if (option.type === ElementType.FIRE || 
-        option.type === ElementType.WATER || 
-        option.type === ElementType.LIGHTNING) {
-      this.hero.currentElement = option.type;
-    } else if (option.type === 'atk_spd') {
-      this.hero.attackInterval = Math.max(5, Math.floor(this.hero.attackInterval * 0.8));
+    console.log("应用升级:", option.label);
+    
+    // 元素升级
+    if ([ElementType.FIRE, ElementType.WATER, ElementType.LIGHTNING, ElementType.ICE].includes(option.type)) {
+      this.hero.currentElement = option.type; // 切换当前武器
+      this.hero.elementLevels[option.type]++; // 提升等级
+    }
+    // 被动升级
+    else if (option.type === 'passive_shatter') {
+      this.hero.passives.shatter = true;
+    }
+    else if (option.type === 'passive_exec') {
+      this.hero.passives.executioner = true;
+    }
+    else if (option.type === 'passive_blast') {
+      this.hero.passives.blast_radius = 50;
+    }
+    // 基础 Buff
+    else if (option.type === 'buff_multishot') {
+      this.hero.projectileCount++;
+    }
+    else if (option.type === 'buff_pierce') {
+      this.hero.pierceCount++;
+    }
+    else if (option.type === 'buff_spd') {
+      this.hero.attackInterval = Math.max(5, Math.floor(this.hero.attackInterval * 0.85));
+    }
+    else if (option.type === 'buff_crit') {
+      this.hero.critRate = Math.min(1.0, this.hero.critRate + 0.1);
+    }
+    else if (option.type === 'buff_heal') {
+      this.hero.hp = Math.min(this.hero.maxHp, this.hero.hp + this.hero.maxHp * 0.3);
+    }
+    else if (option.type === 'buff_magnet') {
+      this.hero.pickupRange += 50;
     }
   }
 
@@ -227,61 +286,129 @@ export default class Main {
     // 1. 子弹打敌人
     for (let bullet of this.bullets) {
       if (!bullet.active) continue;
+      
       for (let enemy of this.enemies) {
         if (!enemy.active) continue;
+        
+        // 检查是否已经打过这个怪
+        if (bullet.hitList.includes(enemy.id)) continue;
+        
         const dist = Math.sqrt((bullet.x - enemy.x)**2 + (bullet.y - enemy.y)**2);
-        if (dist < (enemy.width/2 + 5)) { // 稍微调整碰撞半径适应不同大小的怪
-          bullet.active = false;
-          const baseDamage = 2; // 基础伤害
-          const result = ElementalSystem.calculate(enemy.attachedElement, bullet.elementType, baseDamage);
-          enemy.hp -= result.damage;
-          enemy.attachedElement = result.remainingElement;
+        if (dist < (enemy.width/2 + 5)) {
+          // 记录命中
+          bullet.hitList.push(enemy.id);
           
-          // 显示伤害数字
-          let damageColor = '#ffffff';
-          let damageText = `-${result.damage.toFixed(0)}`;
+          // 检查穿透次数
+          if (bullet.pierce > 0) {
+            bullet.pierce--;
+            // 子弹继续飞行，不销毁
+          } else {
+            bullet.active = false; // 次数用尽，销毁
+          }
           
-          // 如果有反应，显示反应名称和特殊颜色
-          if (result.reaction !== ReactionType.NONE) {
-            damageColor = ElementalSystem.getReactionColor(result.reaction);
-            if (result.reaction === ReactionType.VAPORIZE) {
-              damageText = `蒸发! -${result.damage.toFixed(0)}`;
-            } else if (result.reaction === ReactionType.OVERLOAD) {
-              damageText = `超载! -${result.damage.toFixed(0)}`;
+          // 生成一点点火花粒子
+          this.spawnExplosion(bullet.x, bullet.y, '#ffff00', 3);
+          
+          // 伤害计算升级
+          let damage = 2; // 基础伤害
+          
+          // 【被动】碎冰：如果敌人冻结，必定暴击
+          if (this.hero.passives.shatter && enemy.freezeTimer > 0) {
+            bullet.isCrit = true;
+          }
+          
+          // 暴击计算
+          let isCrit = bullet.isCrit; // 从子弹获取
+          if (isCrit) {
+            damage *= 2.0; // 暴击 200% 伤害
+          }
+          
+          // 【被动】处刑者：如果敌人有附着元素、燃烧或冻结，伤害加成
+          if (this.hero.passives.executioner) {
+            if (enemy.attachedElement !== ElementType.NONE || enemy.burnTimer > 0 || enemy.freezeTimer > 0) {
+              damage *= 1.5;
             }
           }
           
-          this.floatingTexts.push(new FloatingText(
-            enemy.x, 
-            enemy.y - 20, 
-            damageText, 
-            damageColor,
-            24
-          ));
+          // 传入 hero.elementLevels 进行计算
+          const result = ElementalSystem.calculate(
+            enemy.attachedElement, 
+            bullet.elementType, 
+            damage, 
+            this.hero.elementLevels // 传入等级
+          );
           
-          // 处理 Overload AoE 效果
-          if (result.reaction === ReactionType.OVERLOAD && result.isAoE) {
-            this.handleOverloadAoE(enemy.x, enemy.y, result.aoeRadius, result.aoeDamage);
+          // 应用燃烧
+          if (result.effect && result.effect.type === 'burn') {
+            enemy.burnTimer = result.effect.duration;
+            enemy.burnDamage = result.effect.damage;
+          }
+          
+          // 应用冻结
+          if (result.effect && result.effect.type === 'freeze') {
+            enemy.freezeTimer = result.effect.duration;
+          }
+          
+          enemy.hp -= result.damage;
+          enemy.attachedElement = result.remainingElement;
+          
+          // 飘字逻辑
+          let textType = 'normal';
+          if (result.reaction !== ReactionType.NONE) textType = 'crit'; // 反应算大字
+          if (isCrit) textType = 'crit'; // 暴击也算大字
+          
+          // 如果是冻结，飘蓝字
+          if (result.reaction === ReactionType.FREEZE) {
+            this.floatingTexts.push(new FloatingText(
+              enemy.x, 
+              enemy.y - 20, 
+              "FREEZE!", 
+              '#74b9ff',
+              24
+            ));
+          } else {
+            this.floatingTexts.push(new FloatingText(
+              enemy.x, 
+              enemy.y - 20, 
+              `-${result.damage.toFixed(0)}`, 
+              isCrit ? '#ff0000' : '#ffffff',
+              textType === 'crit' ? 28 : 24
+            ));
+          }
+          
+          // AOE 效果
+          if (result.reaction === ReactionType.OVERLOAD || result.reaction === ReactionType.SUPERCONDUCT) {
+            // 【被动】热能激荡：增加范围
+            let range = (result.aoeRange || 100) + this.hero.passives.blast_radius;
+            this.handleOverloadAoE(enemy.x, enemy.y, range, result.aoeDamage || damage * 0.5);
+            this.spawnExplosion(enemy.x, enemy.y, '#9b59b6', 15);
           }
           
           if (enemy.hp <= 0) {
             enemy.active = false;
+            // 敌人死亡粒子
+            this.spawnExplosion(enemy.x, enemy.y, enemy.color, 10);
+            
             // 根据敌人类型掉落经验
             let expValue = 20;
             if (enemy.type === 'elite') expValue = 100;
-            if (enemy.type === 'boss') expValue = 1000; // Boss 巨额经验
+            if (enemy.type === 'boss') expValue = 1000;
+            else if (enemy.type === 'charger') expValue = 30;
             this.orbs.push(new ExpOrb(enemy.x, enemy.y, expValue));
             
             // 如果 Boss 死了，直接胜利 (延迟一点)
             if (enemy.type === 'boss') {
+              this.saveScore(); // 胜利保存
               setTimeout(() => { this.state = GameState.VICTORY; }, 1000);
             }
           }
-          break;
+          
+          // 如果子弹已经销毁 (pierce用完)，跳出 inner loop
+          if (!bullet.active) break;
         }
       }
     }
-
+    
     // 2. 敌人子弹打玩家 (新增)
     for (let eb of this.enemyBullets) {
       if (!eb.active) continue;
@@ -296,6 +423,8 @@ export default class Main {
           '#e74c3c',
           20
         ));
+        // 玩家受伤粒子
+        this.spawnExplosion(this.hero.x, this.hero.y, '#ff0000', 5);
       }
     }
 
@@ -387,10 +516,12 @@ export default class Main {
     
     // 检查游戏结束
     if (this.hero.isDead) {
+      this.saveScore(); // 死亡保存
       this.state = GameState.GAME_OVER;
     }
     // 检查胜利 (时间到了且 Boss 还没出，或者 Boss 已死)
     if (this.currentTime >= this.totalTime && !this.bossSpawned) {
+      this.saveScore();
       this.state = GameState.VICTORY; 
     }
 
@@ -398,16 +529,32 @@ export default class Main {
     const input = this.joystick.getInputVector();
     this.hero.update(input);
 
-    const newBullet = this.hero.tryAttack(this.enemies);
-    if (newBullet) this.bullets.push(newBullet);
+    // 玩家射击 (改为接收数组)
+    const newBullets = this.hero.tryAttack(this.enemies);
+    if (newBullets && newBullets.length > 0) {
+      this.bullets.push(...newBullets); // 展开数组推入
+    }
 
     this.spawnEnemy();
     
     // 敌人生成与更新（Boss 会返回子弹数组）
     this.enemies.forEach(e => {
-      const bullets = e.update(this.hero);
-      if (bullets && bullets.length > 0) {
-        this.enemyBullets.push(...bullets);
+      const result = e.update(this.hero);
+      if (result) {
+        // 处理敌人燃烧扣血导致的死亡（优先检查，因为死亡后不会返回子弹）
+        if (result.diedByDot) {
+          // 燃烧死亡掉落
+          let exp = 20;
+          if (e.type === 'elite') exp = 100;
+          else if (e.type === 'charger') exp = 30;
+          this.orbs.push(new ExpOrb(e.x, e.y, exp));
+          // 飘字
+          this.floatingTexts.push(new FloatingText(e.x, e.y - 20, "Burn", '#e67e22', 20));
+        }
+        // Boss 子弹（Boss不会被烧死，所以可以安全检查）
+        else if (result.bullets && result.bullets.length > 0) {
+          this.enemyBullets.push(...result.bullets);
+        }
       }
     });
     
@@ -415,6 +562,9 @@ export default class Main {
     this.enemyBullets.forEach(eb => eb.update()); // 更新敌人子弹
     this.orbs.forEach(o => o.update(this.hero)); // 更新经验球
     this.floatingTexts.forEach(ft => ft.update()); // 更新浮动文字
+    
+    // 粒子更新
+    this.particles.forEach(p => p.update());
 
     this.checkCollisions();
 
@@ -424,24 +574,34 @@ export default class Main {
     this.enemyBullets = this.enemyBullets.filter(eb => eb.active);
     this.orbs = this.orbs.filter(o => o.active);
     this.floatingTexts = this.floatingTexts.filter(ft => ft.active);
+    this.particles = this.particles.filter(p => p.life > 0); // 清理粒子
   }
 
   render() {
-    // 渲染游戏画面
+    // 全局背景色
     this.ctx.fillStyle = '#333333';
     this.ctx.fillRect(0, 0, this.screenWidth, this.screenHeight);
 
-    this.orbs.forEach(o => o.render(this.ctx)); // 画球
+    // 如果是 START 界面
+    if (this.state === GameState.START) {
+      this.renderStartScreen();
+      return;
+    }
+
+    // 游戏内渲染
+    this.orbs.forEach(o => o.render(this.ctx));
     this.enemies.forEach(e => e.render(this.ctx));
     this.bullets.forEach(b => b.render(this.ctx));
+    this.enemyBullets.forEach(eb => eb.render(this.ctx));
     this.hero.render(this.ctx);
-    this.floatingTexts.forEach(ft => ft.render(this.ctx)); // 渲染浮动文字
-    this.joystick.render(this.ctx);
     
-    // UI: 经验条
+    // 粒子渲染
+    this.particles.forEach(p => p.render(this.ctx));
+    
+    this.floatingTexts.forEach(ft => ft.render(this.ctx));
+    this.joystick.render(this.ctx);
     this.renderHUD();
 
-    // UI: 升级弹窗
     if (this.state === GameState.LEVEL_UP) {
       this.renderLevelUpUI();
     }
@@ -451,6 +611,27 @@ export default class Main {
     if (this.state === GameState.VICTORY) {
       this.renderVictoryUI();
     }
+  }
+  
+  renderStartScreen() {
+    this.ctx.fillStyle = '#2c3e50';
+    this.ctx.fillRect(0, 0, this.screenWidth, this.screenHeight);
+
+    this.ctx.fillStyle = '#f1c40f';
+    this.ctx.font = 'bold 40px Arial';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText('ELEMENTAL SURVIVOR', this.screenWidth / 2, this.screenHeight / 2 - 40);
+    
+    this.ctx.fillStyle = '#fff';
+    this.ctx.font = '20px Arial';
+    this.ctx.fillText('Tap to Start', this.screenWidth / 2, this.screenHeight / 2 + 20);
+
+    // 显示最高分
+    this.ctx.fillStyle = '#bdc3c7';
+    this.ctx.font = '16px Arial';
+    const bestMins = Math.floor(this.bestTime / 60).toString().padStart(2, '0');
+    const bestSecs = (this.bestTime % 60).toString().padStart(2, '0');
+    this.ctx.fillText(`Best Time: ${bestMins}:${bestSecs}`, this.screenWidth / 2, this.screenHeight / 2 + 60);
   }
 
   renderHUD() {
@@ -557,7 +738,7 @@ export default class Main {
     
     this.ctx.fillStyle = '#fff';
     this.ctx.font = '20px Arial';
-    this.ctx.fillText('Tap to Restart', this.screenWidth / 2, this.screenHeight / 2 + 40);
+    this.ctx.fillText('Tap to Return Title', this.screenWidth / 2, this.screenHeight / 2 + 40);
   }
   
   renderVictoryUI() {
@@ -571,7 +752,8 @@ export default class Main {
     
     this.ctx.fillStyle = '#fff';
     this.ctx.font = '20px Arial';
-    this.ctx.fillText('You Defeated the Boss!', this.screenWidth / 2, this.screenHeight / 2 + 40);
+    this.ctx.fillText('You Defeated the Boss!', this.screenWidth / 2, this.screenHeight / 2 + 20);
+    this.ctx.fillText('Tap to Return Title', this.screenWidth / 2, this.screenHeight / 2 + 50);
   }
 
   loop() {

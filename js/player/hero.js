@@ -24,6 +24,28 @@ export default class Hero {
     this.isDead = false;
     // 无敌帧 (防止一瞬间被秒杀)
     this.invincibleTime = 0;
+    
+    // --- 新增：战斗属性 ---
+    this.projectileCount = 1; // 子弹数量
+    this.critRate = 0;        // 暴击率 (0 ~ 1)
+    
+    // --- 新增属性 ---
+    this.pierceCount = 0; // 默认不穿透
+    this.pickupRange = 50; // 默认捡球范围
+    
+    // --- 新增：Build 属性 ---
+    this.elementLevels = {
+      [ElementType.FIRE]: 0,
+      [ElementType.WATER]: 0,
+      [ElementType.LIGHTNING]: 0,
+      [ElementType.ICE]: 0
+    };
+    
+    this.passives = {
+      executioner: false, // 处刑者：对异常状态敌人增伤
+      shatter: false,     // 碎冰：攻击冻结敌人必定暴击
+      blast_radius: 0,    // 爆炸范围加成
+    };
   }
 
   update(inputVector) {
@@ -60,7 +82,7 @@ export default class Hero {
   }
 
   tryAttack(enemies) {
-    if (this.attackCooldown > 0) return null;
+    if (this.attackCooldown > 0) return []; // 改为返回数组
 
     let nearestEnemy = null;
     let minDist = Infinity;
@@ -79,11 +101,41 @@ export default class Hero {
     if (nearestEnemy) {
       this.attackCooldown = this.attackInterval;
       
-      // --- 修改：使用当前 currentElement 发射 ---
-      return new Bullet(this.x, this.y, nearestEnemy.x, nearestEnemy.y, this.currentElement);
+      const bullets = [];
+      const targetX = nearestEnemy.x;
+      const targetY = nearestEnemy.y;
+      
+      // 多重射击逻辑 (扇形散射)
+      const angleBase = Math.atan2(targetY - this.y, targetX - this.x);
+      const spread = 0.2; // 散射弧度 (约10度)
+      
+      for (let i = 0; i < this.projectileCount; i++) {
+        // 计算每发子弹的偏移角度
+        let angleOffset = 0;
+        if (this.projectileCount > 1) {
+          angleOffset = (i - (this.projectileCount - 1) / 2) * spread;
+        }
+        
+        // 反算一个假的 target
+        const finalAngle = angleBase + angleOffset;
+        const fakeTargetX = this.x + Math.cos(finalAngle) * 100;
+        const fakeTargetY = this.y + Math.sin(finalAngle) * 100;
+
+        // 判断是否暴击
+        let isCrit = Math.random() < this.critRate;
+        
+        let b = new Bullet(this.x, this.y, fakeTargetX, fakeTargetY, this.currentElement);
+        b.isCrit = isCrit; // 标记暴击
+        // 赋值穿透属性
+        b.pierce = this.pierceCount;
+        
+        bullets.push(b);
+      }
+
+      return bullets;
     }
 
-    return null;
+    return [];
   }
   
   render(ctx) {
