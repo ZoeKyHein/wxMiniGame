@@ -15,8 +15,8 @@ export default class Hero {
     this.attackCooldown = 0;
     this.attackInterval = 30;
     
-    // 测试用：记录下一次发射的元素索引
-    this.testElementToggle = 0;
+    // --- 修改：当前持有的元素，默认为 NONE ---
+    this.currentElement = ElementType.NONE;
   }
 
   // ... (update 保持不变) ...
@@ -50,13 +50,8 @@ export default class Hero {
     if (nearestEnemy) {
       this.attackCooldown = this.attackInterval;
       
-      // --- 修改开始：交替发射火和水 ---
-      // 偶数发火，奇数发水
-      let elType = (this.testElementToggle % 2 === 0) ? ElementType.FIRE : ElementType.WATER;
-      this.testElementToggle++;
-      // -----------------------------
-
-      return new Bullet(this.x, this.y, nearestEnemy.x, nearestEnemy.y, elType);
+      // --- 修改：使用当前 currentElement 发射 ---
+      return new Bullet(this.x, this.y, nearestEnemy.x, nearestEnemy.y, this.currentElement);
     }
 
     return null;
