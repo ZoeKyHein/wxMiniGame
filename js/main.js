@@ -3,8 +3,9 @@ import Hero from './player/hero.js';
 import Enemy from './npc/enemy.js';
 import Bullet from './weapon/bullet.js';
 import ExpOrb from './item/exp_orb.js';
+import FloatingText from './ui/floating_text.js';
 import ElementalSystem from './core/elemental.js';
-import { ElementType } from './base/constants.js';
+import { ElementType, ReactionType } from './base/constants.js';
 
 // 游戏状态枚举
 const GameState = {
@@ -31,6 +32,7 @@ export default class Main {
     this.enemies = [];
     this.bullets = [];
     this.orbs = []; // 经验球列表
+    this.floatingTexts = []; // 浮动文字列表
 
     // 游戏数据
     this.frameCount = 0;
@@ -74,6 +76,7 @@ export default class Main {
     this.enemies = [];
     this.bullets = [];
     this.orbs = [];
+    this.floatingTexts = [];
     this.frameCount = 0;
     this.state = GameState.PLAYING;
     this.level = 1;
@@ -106,12 +109,34 @@ export default class Main {
 
   triggerLevelUp() {
     this.state = GameState.LEVEL_UP;
-    // 生成3个选项
-    this.upgradeOptions = [
+    // 生成3个选项（随机包含元素和属性升级）
+    const allOptions = [
       { id: 1, label: '火元素附魔', type: ElementType.FIRE, desc: '攻击变为火属性' },
       { id: 2, label: '水元素附魔', type: ElementType.WATER, desc: '攻击变为水属性' },
-      { id: 3, label: '攻速提升', type: 'atk_spd', desc: '射击间隔减少 20%' }
+      { id: 3, label: '雷元素附魔', type: ElementType.LIGHTNING, desc: '攻击变为雷属性' },
+      { id: 4, label: '攻速提升', type: 'atk_spd', desc: '射击间隔减少 20%' }
     ];
+    
+    // 随机选择3个选项（确保至少有一个元素选项）
+    const elementOptions = allOptions.filter(opt => 
+      opt.type === ElementType.FIRE || 
+      opt.type === ElementType.WATER || 
+      opt.type === ElementType.LIGHTNING
+    );
+    const otherOptions = allOptions.filter(opt => opt.type === 'atk_spd');
+    
+    // 至少选择一个元素，然后随机填充其他选项
+    const selected = [elementOptions[Math.floor(Math.random() * elementOptions.length)]];
+    const remaining = [...elementOptions.filter(opt => opt.id !== selected[0].id), ...otherOptions];
+    
+    // 随机打乱并选择2个
+    for (let i = remaining.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [remaining[i], remaining[j]] = [remaining[j], remaining[i]];
+    }
+    
+    this.upgradeOptions = [...selected, ...remaining.slice(0, 2)];
+    
     // 每次升级重置摇杆，防止卡住
     this.joystick.reset();
   }
@@ -139,7 +164,9 @@ export default class Main {
 
   applyUpgrade(option) {
     console.log("选择了升级:", option.label);
-    if (option.type === ElementType.FIRE || option.type === ElementType.WATER) {
+    if (option.type === ElementType.FIRE || 
+        option.type === ElementType.WATER || 
+        option.type === ElementType.LIGHTNING) {
       this.hero.currentElement = option.type;
     } else if (option.type === 'atk_spd') {
       this.hero.attackInterval = Math.max(5, Math.floor(this.hero.attackInterval * 0.8));
@@ -159,6 +186,33 @@ export default class Main {
           const result = ElementalSystem.calculate(enemy.attachedElement, bullet.elementType, baseDamage);
           enemy.hp -= result.damage;
           enemy.attachedElement = result.remainingElement;
+          
+          // 显示伤害数字
+          let damageColor = '#ffffff';
+          let damageText = `-${result.damage.toFixed(0)}`;
+          
+          // 如果有反应，显示反应名称和特殊颜色
+          if (result.reaction !== ReactionType.NONE) {
+            damageColor = ElementalSystem.getReactionColor(result.reaction);
+            if (result.reaction === ReactionType.VAPORIZE) {
+              damageText = `蒸发! -${result.damage.toFixed(0)}`;
+            } else if (result.reaction === ReactionType.OVERLOAD) {
+              damageText = `超载! -${result.damage.toFixed(0)}`;
+            }
+          }
+          
+          this.floatingTexts.push(new FloatingText(
+            enemy.x, 
+            enemy.y - 20, 
+            damageText, 
+            damageColor,
+            24
+          ));
+          
+          // 处理 Overload AoE 效果
+          if (result.reaction === ReactionType.OVERLOAD && result.isAoE) {
+            this.handleOverloadAoE(enemy.x, enemy.y, result.aoeRadius, result.aoeDamage);
+          }
           
           if (enemy.hp <= 0) {
             enemy.active = false;
@@ -184,6 +238,48 @@ export default class Main {
     
     // 3. 敌人撞玩家 (略)
   }
+  
+  /**
+   * 处理 Overload 的 AoE 爆炸效果
+   */
+  handleOverloadAoE(centerX, centerY, radius, damage) {
+    // 对范围内的所有敌人造成伤害
+    for (let enemy of this.enemies) {
+      if (!enemy.active) continue;
+      
+      const dx = enemy.x - centerX;
+      const dy = enemy.y - centerY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      
+      if (dist <= radius) {
+        enemy.hp -= damage;
+        
+        // 显示 AoE 伤害数字（较小）
+        this.floatingTexts.push(new FloatingText(
+          enemy.x,
+          enemy.y - 20,
+          `-${damage.toFixed(0)}`,
+          '#f39c12',
+          18
+        ));
+        
+        if (enemy.hp <= 0) {
+          enemy.active = false;
+          // 掉落经验球
+          this.orbs.push(new ExpOrb(enemy.x, enemy.y, 20));
+        }
+      }
+    }
+    
+    // 可选：添加爆炸视觉效果（暂时用文字提示）
+    this.floatingTexts.push(new FloatingText(
+      centerX,
+      centerY - 40,
+      'BOOM!',
+      '#f39c12',
+      30
+    ));
+  }
 
   update() {
     // 如果不是 PLAYING 状态，不更新游戏逻辑
@@ -201,6 +297,7 @@ export default class Main {
     this.enemies.forEach(e => e.update(this.hero));
     this.bullets.forEach(b => b.update());
     this.orbs.forEach(o => o.update(this.hero)); // 更新经验球
+    this.floatingTexts.forEach(ft => ft.update()); // 更新浮动文字
 
     this.checkCollisions();
 
@@ -208,6 +305,7 @@ export default class Main {
     this.enemies = this.enemies.filter(e => e.active);
     this.bullets = this.bullets.filter(b => b.active);
     this.orbs = this.orbs.filter(o => o.active);
+    this.floatingTexts = this.floatingTexts.filter(ft => ft.active);
   }
 
   render() {
@@ -219,6 +317,7 @@ export default class Main {
     this.enemies.forEach(e => e.render(this.ctx));
     this.bullets.forEach(b => b.render(this.ctx));
     this.hero.render(this.ctx);
+    this.floatingTexts.forEach(ft => ft.render(this.ctx)); // 渲染浮动文字
     this.joystick.render(this.ctx);
     
     // UI: 经验条

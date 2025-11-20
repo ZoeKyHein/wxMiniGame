@@ -39,6 +39,8 @@ export default class Bullet {
       ctx.fillStyle = '#ff0000'; // 火子弹红色
     } else if (this.elementType === ElementType.WATER) {
       ctx.fillStyle = '#0000ff'; // 水子弹蓝色
+    } else if (this.elementType === ElementType.LIGHTNING) {
+      ctx.fillStyle = '#f39c12'; // 雷子弹橙色/金色
     } else {
       ctx.fillStyle = '#ffff00'; // 普通子弹黄色
     }
