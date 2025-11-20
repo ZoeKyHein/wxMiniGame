@@ -1,3 +1,5 @@
+import Bullet from '../weapon/bullet.js' // 引入子弹
+
 export default class Hero {
   constructor(screenWidth, screenHeight) {
     this.screenWidth = screenWidth;
