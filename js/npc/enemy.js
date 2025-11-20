@@ -214,18 +214,30 @@ export default class Enemy {
       ctx.strokeRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
     }
 
-    // 冲锋怪蓄力时变白/闪烁
-    if (this.type === 'charger' && this.chargeState === 1) {
-      if (Math.floor(Date.now() / 50) % 2 === 0) {
-        ctx.fillStyle = '#fff';
+    // 冲锋怪画成菱形 (旋转的矩形)
+    if (this.type === 'charger') {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(Math.PI / 4); // 旋转 45度
+      
+      // 蓄力时变白/闪烁
+      if (this.chargeState === 1) {
+        if (Math.floor(Date.now() / 50) % 2 === 0) {
+          ctx.fillStyle = '#fff';
+        } else {
+          ctx.fillStyle = this.color;
+        }
       } else {
         ctx.fillStyle = this.color;
       }
+      
+      ctx.fillRect(-this.width / 2, -this.height / 2, this.width, this.height);
+      ctx.restore();
     } else {
+      // 其他怪正常渲染
       ctx.fillStyle = this.color;
+      ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
     }
-    
-    ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
 
     // 燃烧视觉效果 (橙色滤镜)
     if (this.burnTimer > 0) {

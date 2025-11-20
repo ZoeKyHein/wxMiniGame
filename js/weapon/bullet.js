@@ -24,16 +24,29 @@ export default class Bullet {
     // 新增：穿透逻辑
     this.pierce = 0; // 默认穿透次数 (0代表打中1个就死，1代表能穿过1个打中2个)
     this.hitList = []; // 记录已经打中过的敌人 ID (防止重复伤害)
+    
+    // 新增：连锁属性
+    this.chain = 0; // 弹射次数
   }
 
   update() {
     this.x += this.velocityX;
     this.y += this.velocityY;
 
-    // 简单边界销毁：飞出屏幕太远就销毁
-    // (这里假设屏幕大小大致范围，简单处理)
-    if (this.x < -100 || this.x > 2000 || this.y < -100 || this.y > 1500) {
+    // 稍微扩大一点销毁范围，防止弹射时飞出一点点就消失
+    if (this.x < -200 || this.x > 2500 || this.y < -200 || this.y > 2000) {
       this.active = false;
+    }
+  }
+  
+  // 新增：重定向方法 (用于弹射)
+  redirect(targetX, targetY) {
+    const dx = targetX - this.x;
+    const dy = targetY - this.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > 0) {
+      this.velocityX = (dx / dist) * this.speed;
+      this.velocityY = (dy / dist) * this.speed;
     }
   }
 
@@ -46,7 +59,7 @@ export default class Bullet {
     } else if (this.elementType === ElementType.WATER) {
       ctx.fillStyle = '#0000ff'; // 水子弹蓝色
     } else if (this.elementType === ElementType.LIGHTNING) {
-      ctx.fillStyle = '#f39c12'; // 雷子弹橙色/金色
+      ctx.fillStyle = '#9b59b6'; // 雷子弹紫色
     } else if (this.elementType === ElementType.ICE) {
       ctx.fillStyle = '#74b9ff'; // 冰子弹浅蓝
     } else {

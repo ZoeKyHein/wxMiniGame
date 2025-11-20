@@ -33,6 +33,9 @@ export default class Hero {
     this.pierceCount = 0; // 默认不穿透
     this.pickupRange = 50; // 默认捡球范围
     
+    // --- 新增：连锁属性 ---
+    this.chainCount = 0; // 默认 0
+    
     // --- 新增：Build 属性 ---
     this.elementLevels = {
       [ElementType.FIRE]: 0,
@@ -45,6 +48,9 @@ export default class Hero {
       executioner: false, // 处刑者：对异常状态敌人增伤
       shatter: false,     // 碎冰：攻击冻结敌人必定暴击
       blast_radius: 0,    // 爆炸范围加成
+      // 新增：融合技
+      fusion_storm: false,    // 风暴之眼 (雷+水)：连锁次数+2，且连锁伤害不减
+      fusion_frostfire: false // 霜火 (冰+火)：冻结敌人会同时受到猛烈燃烧
     };
   }
 
@@ -128,6 +134,15 @@ export default class Hero {
         b.isCrit = isCrit; // 标记暴击
         // 赋值穿透属性
         b.pierce = this.pierceCount;
+        
+        // 应用连锁
+        // 如果是雷元素，天生 +1 连锁
+        let baseChain = this.chainCount;
+        if (this.currentElement === ElementType.LIGHTNING) baseChain += 1;
+        // 如果有风暴融合技，再 +2
+        if (this.passives.fusion_storm) baseChain += 2;
+        
+        b.chain = baseChain;
         
         bullets.push(b);
       }
