@@ -12,6 +12,16 @@ import { Characters } from './base/characters.js';
 import ResourceLoader from './base/resource.js'; // 引入资源加载器
 import { pool } from './base/pool.js'; // 引入对象池
 import { audio } from './base/audio.js'; // 引入音频管理器
+import Camera from './base/camera.js'; // 引入摄像机
+import Obstacle, { ObstacleType } from './item/obstacle.js'; // 引入障碍物
+import Chest from './item/chest.js'; // 引入宝箱
+import UISystem from './ui/ui_system.js'; // 引入UI系统
+import { MapZone, Shrine, ZoneType } from './core/map_system.js'; // 引入地图系统
+import SpatialGrid from './core/spatial_grid.js'; // 引入空间网格
+import FormationManager from './core/formation.js'; // 引入阵型管理器
+import ItemManager from './core/item_manager.js'; // 引入道具管理器
+import Compendium from './ui/compendium.js'; // 引入图鉴系统
+import AchievementManager from './core/achievements.js'; // 引入成就系统
 
 // 游戏状态枚举
 const GameState = {
@@ -61,7 +71,42 @@ export default class Main {
     // 我们可以定义一个全局 padding
     this.uiPadding = Math.max(20, this.safeArea.left);
 
-    // 2. 加载资源
+    // 2. 定义世界大小 (例如 2倍屏幕大小)
+    this.worldWidth = this.screenWidth * 2; 
+    this.worldHeight = this.screenHeight * 2;
+    // 或者固定数值，例如 2000x2000
+    // this.worldWidth = 2000; this.worldHeight = 2000;
+
+    // 3. 初始化摄像机
+    this.camera = new Camera(this.screenWidth, this.screenHeight, this.worldWidth, this.worldHeight);
+
+    // 4. 初始化系统
+    this.uiSystem = new UISystem(this.screenWidth, this.screenHeight);
+    this.spatialGrid = new SpatialGrid(this.worldWidth, this.worldHeight, 100); // 100x100 的格子
+    this.itemManager = new ItemManager(this); // 道具管理器
+    this.achievementManager = new AchievementManager(); // 成就管理器
+
+    // 5. 地图元素
+    this.mapZones = [];
+    this.shrines = [];
+    
+    // 6. 图鉴系统
+    this.compendium = null;
+    
+    // 7. 新手引导
+    this.floorDecals = [];
+    this.seenTutorials = wx.getStorageSync('seen_tutorials') || [];
+    this.tutorialPauseTimer = 0; // 教程暂停计时器
+    
+    // 8. 设置全局实例供 Hook 访问
+    window.gameInstance = this;
+    
+    // 8. 导出类供 Hook 使用
+    this.FloatingText = FloatingText;
+    this.ExpOrb = ExpOrb;
+    this.PickupType = PickupType;
+
+    // 6. 加载资源
     this.loader = new ResourceLoader();
     this.images = null; // 初始化图片对象
     this.loader.load((images) => {
@@ -153,16 +198,38 @@ export default class Main {
       const tx = e.changedTouches[0].clientX;
       const ty = e.changedTouches[0].clientY;
       
+      // 检查暂停按钮 (右上角)
+      if (tx > this.screenWidth - 50 && ty < 50 && this.state === GameState.PLAYING) {
+        this.uiSystem.togglePause();
+        return;
+      }
+      
+      // 如果暂停中，点击恢复
+      if (this.uiSystem.isPaused && this.state === GameState.PLAYING) {
+        this.uiSystem.togglePause();
+        return;
+      }
+      
       if (this.state === GameState.START) {
         // 检查是否点击了商店按钮
         const btnX = this.screenWidth / 2 - 80;
-        const btnY = this.screenHeight / 2 + 100;
-        if (tx >= btnX && tx <= btnX + 160 && ty >= btnY && ty <= btnY + 50) {
+        const shopBtnY = this.screenHeight / 2 + 100;
+        if (tx >= btnX && tx <= btnX + 160 && ty >= shopBtnY && ty <= shopBtnY + 50) {
           this.state = GameState.SHOP;
+          return;
+        }
+        // 检查是否点击了图鉴按钮
+        const compendiumBtnY = this.screenHeight / 2 + 160;
+        if (tx >= btnX && tx <= btnX + 160 && ty >= compendiumBtnY && ty <= compendiumBtnY + 50) {
+          this.compendium = new Compendium(this.screenWidth, this.screenHeight, () => {
+            this.compendium = null;
+          });
           return;
         }
         // 否则进选人
         this.state = GameState.CHAR_SELECT;
+      } else if (this.compendium) {
+        this.compendium.handleTouch(tx, ty);
       } else if (this.state === GameState.SHOP) {
         this.handleShopTouch(tx, ty);
       } else if (this.state === GameState.CHAR_SELECT) {
@@ -263,7 +330,9 @@ export default class Main {
 
   restart() {
     const config = Characters[this.selectedCharKey] || Characters.ranger;
-    this.hero = new Hero(this.screenWidth, this.screenHeight, config);
+    this.hero = new Hero(this.screenWidth, this.screenHeight, this.worldWidth, this.worldHeight, config);
+    this.hero.gameInstance = this; // 设置游戏实例引用
+    this.hero.frameCount = 0; // 初始化帧计数
     this.joystick = new Joystick(this.screenWidth, this.screenHeight);
     this.enemies = [];
     this.bullets = [];
@@ -271,6 +340,14 @@ export default class Main {
     this.orbs = [];
     this.floatingTexts = [];
     this.particles = [];
+    
+    // 初始化障碍物
+    this.obstacles = [];
+    this.chests = []; // 宝箱列表
+    this.magnetActive = false; // 磁铁是否激活
+    this.magnetTimer = 0; // 磁铁持续时间
+    this.initMapElements();
+    this.initAdvancedMap();
     
     // --- 应用天赋 ---
     const lvMight = this.talentLevels['might'] || 0;
@@ -315,6 +392,49 @@ export default class Main {
     
     // 确保重启时 BGM 也在播
     audio.playBgm();
+  }
+  
+  initMapElements() {
+    // 随机生成一些柱子和炸药桶
+    // 注意：不要生成在主角出生点附近 (世界中心)
+    const centerX = this.worldWidth / 2;
+    const centerY = this.worldHeight / 2;
+    
+    for (let i = 0; i < 20; i++) {
+      const x = Math.random() * this.worldWidth;
+      const y = Math.random() * this.worldHeight;
+      
+      // 避开出生点 300像素范围
+      const dist = Math.sqrt((x-centerX)**2 + (y-centerY)**2);
+      if (dist < 300) continue;
+
+      const type = Math.random() > 0.3 ? ObstacleType.PILLAR : ObstacleType.BARREL;
+      this.obstacles.push(new Obstacle(x, y, type));
+    }
+    
+    // 在地图角落生成几个宝箱
+    const chestPositions = [
+      { x: 200, y: 200 },
+      { x: this.worldWidth - 200, y: 200 },
+      { x: 200, y: this.worldHeight - 200 },
+      { x: this.worldWidth - 200, y: this.worldHeight - 200 }
+    ];
+    
+    chestPositions.forEach(pos => {
+      this.chests.push(new Chest(pos.x, pos.y));
+    });
+  }
+  
+  initAdvancedMap() {
+    // 添加几个危险区域
+    this.mapZones.push(new MapZone(500, 500, 300, 300, ZoneType.SLOW));
+    this.mapZones.push(new MapZone(1200, 800, 200, 200, ZoneType.DAMAGE));
+    this.mapZones.push(new MapZone(1500, 300, 150, 150, ZoneType.HEAL));
+    
+    // 添加祭坛
+    this.shrines.push(new Shrine(1500, 1500));
+    this.shrines.push(new Shrine(200, 1800));
+    this.shrines.push(new Shrine(this.worldWidth - 300, 300));
   }
   
   // 新增：触发震动
@@ -420,7 +540,19 @@ export default class Main {
             // 普通生成，根据游戏时间动态调整血量（数值平衡）
             // 第 1 分钟：基础血量，第 5 分钟：血量 x2，第 10 分钟：血量 x3
             const hpMultiplier = 1 + Math.floor(this.currentTime / 60) * 0.2; // 每分钟增加 20%
-            this.enemies.push(new Enemy(this.screenWidth, this.screenHeight, type, hpMultiplier));
+            const enemy = new Enemy(this.worldWidth, this.worldHeight, type, hpMultiplier);
+            
+            // 覆盖 Enemy 的坐标生成逻辑，使其在 Camera 附近但不重叠
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.sqrt(this.screenWidth**2 + this.screenHeight**2) / 2 + 100; // 屏幕对角线外
+            enemy.x = this.camera.x + this.screenWidth/2 + Math.cos(angle) * r;
+            enemy.y = this.camera.y + this.screenHeight/2 + Math.sin(angle) * r;
+            
+            // 确保不跑出世界
+            enemy.x = Math.max(0, Math.min(enemy.x, this.worldWidth));
+            enemy.y = Math.max(0, Math.min(enemy.y, this.worldHeight));
+            
+            this.enemies.push(enemy);
           }
         }
       }
@@ -446,7 +578,11 @@ export default class Main {
       35
     ));
     // Boss 血量固定，不受时间影响（已经是最终挑战）
-    this.enemies.push(new Enemy(this.screenWidth, this.screenHeight, 'boss', 1));
+    const boss = new Enemy(this.worldWidth, this.worldHeight, 'boss', 1);
+    // Boss 生成在世界中心
+    boss.x = this.worldWidth / 2;
+    boss.y = this.worldHeight / 2;
+    this.enemies.push(boss);
     this.triggerShake(60, 10); // 剧烈震动
     
     // 播放 Boss 音乐逻辑可以在这里加
@@ -463,7 +599,15 @@ export default class Main {
     ));
     // 精英怪也根据时间调整血量
     const hpMultiplier = 1 + Math.floor(this.currentTime / 60) * 0.2;
-    this.enemies.push(new Enemy(this.screenWidth, this.screenHeight, 'elite', hpMultiplier));
+    const elite = new Enemy(this.worldWidth, this.worldHeight, 'elite', hpMultiplier);
+    // 精英怪在摄像机附近生成
+    const angle = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(this.screenWidth**2 + this.screenHeight**2) / 2 + 100;
+    elite.x = this.camera.x + this.screenWidth/2 + Math.cos(angle) * r;
+    elite.y = this.camera.y + this.screenHeight/2 + Math.sin(angle) * r;
+    elite.x = Math.max(0, Math.min(elite.x, this.worldWidth));
+    elite.y = Math.max(0, Math.min(elite.y, this.worldHeight));
+    this.enemies.push(elite);
     this.triggerShake(20, 5);
   }
 
@@ -486,6 +630,24 @@ export default class Main {
     // 播放升级音效
     audio.play('levelup');
     
+    // 混合系统：50% 概率是道具，50% 概率是元素升级
+    const useItems = Math.random() < 0.5;
+    
+    if (useItems && this.itemManager) {
+      // 使用道具系统
+      const itemOptions = this.itemManager.getUpgradeOptions(3);
+      this.upgradeOptions = itemOptions.map(item => ({
+        id: item.id,
+        label: item.name,
+        desc: item.desc,
+        type: 'item',
+        item: item
+      }));
+      this.joystick.reset();
+      return;
+    }
+    
+    // 原有的元素升级系统
     // 必须先定义这些变量，下面的 pool 数组和判断逻辑才能使用它们
     const lvFire = this.hero.elementLevels[ElementType.FIRE] || 0;
     const lvWater = this.hero.elementLevels[ElementType.WATER] || 0;
@@ -586,6 +748,14 @@ export default class Main {
   applyUpgrade(option) {
     console.log("应用升级:", option.label);
     
+    // 道具系统
+    if (option.type === 'item' && option.item) {
+      this.itemManager.acquireItem(option.item.id);
+      // 报告道具收集统计
+      this.achievementManager.report('items_collected', 1);
+      return;
+    }
+    
     // 元素升级
     if ([ElementType.FIRE, ElementType.WATER, ElementType.LIGHTNING, ElementType.ICE].includes(option.type)) {
       if (this.hero.trait !== 'prismatic') {
@@ -639,14 +809,17 @@ export default class Main {
   }
 
   checkCollisions() {
-    // 1. 子弹打敌人
+    // 1. 子弹打敌人 (使用空间网格优化)
     for (let bullet of this.bullets) {
       if (!bullet.active) continue;
+      
+      // 只获取附近的敌人！性能提升的关键！
+      const nearbyEnemies = this.spatialGrid.retrieve(bullet);
       
       // 用来记录是否发生过碰撞，方便处理弹射
       let hitSomething = false;
       
-      for (let enemy of this.enemies) {
+      for (let enemy of nearbyEnemies) {
         if (!enemy.active) continue;
         if (bullet.hitList.includes(enemy.id)) continue;
         
@@ -730,8 +903,9 @@ export default class Main {
             const kdist = Math.sqrt(kx * kx + ky * ky) || 1;
             enemy.x += (kx / kdist) * result.knockback;
             enemy.y += (ky / kdist) * result.knockback;
-            enemy.x = Math.max(0, Math.min(this.screenWidth, enemy.x));
-            enemy.y = Math.max(0, Math.min(this.screenHeight, enemy.y));
+            // 边界限制改为世界坐标
+            enemy.x = Math.max(0, Math.min(this.worldWidth, enemy.x));
+            enemy.y = Math.max(0, Math.min(this.worldHeight, enemy.y));
           }
           
           // 2. 暴击/元素反应：大爆炸
@@ -745,35 +919,27 @@ export default class Main {
             
             // 产生向四周飞溅的圆环粒子 (用大量小粒子模拟)
             this.spawnExplosion(bullet.x, bullet.y, color, 10);
+            
             // 播放爆炸音效（只有大爆炸或暴击时才播放，防止太吵）
-            audio.play('explosion');
+            if (result.reaction === ReactionType.FREEZE) {
+              audio.play('reaction_freeze', false);
+            } else if (result.reaction === ReactionType.VAPORIZE) {
+              audio.play('reaction_vaporize', false);
+            } else {
+              audio.play('explosion_small', true); // 小爆炸，启用变调
+            }
+          } else {
+            // 普通击中音效
+            audio.play('hit', true);
           }
           
-          // 飘字（优化：减少飘字数量，避免满屏数字）
-          // 只有当暴击、反应、或者随机几率满足时才飘字
-          let showText = bullet.isCrit || result.reaction !== ReactionType.NONE || Math.random() < 0.3;
-          
-          if (showText) {
-            let textType = 'normal';
-            if (result.reaction !== ReactionType.NONE || bullet.isCrit) textType = 'crit';
-            
-            if (result.reaction === ReactionType.FREEZE) {
-              this.floatingTexts.push(new FloatingText(
-                enemy.x, 
-                enemy.y - 20, 
-                "FREEZE!", 
-                '#74b9ff',
-                24
-              ));
-            } else {
-              this.floatingTexts.push(new FloatingText(
-                enemy.x, 
-                enemy.y - 20, 
-                `-${result.damage.toFixed(0)}`, 
-                bullet.isCrit ? '#ff0000' : '#ffffff',
-                textType === 'crit' ? 28 : 24
-              ));
-            }
+          // 伤害数字聚合系统
+          if (result.reaction === ReactionType.FREEZE) {
+            // 特殊反应显示文字
+            this.spawnDamageText(enemy, 0, "FREEZE!", '#74b9ff', 24, false);
+          } else {
+            // 普通伤害数字，尝试聚合
+            this.spawnDamageText(enemy, result.damage, null, bullet.isCrit ? '#ff0000' : '#ffffff', bullet.isCrit ? 28 : 24, true);
           }
           
           // AOE 效果（反应或基础火焰）
@@ -792,7 +958,25 @@ export default class Main {
             this.handleOverloadAoE(enemy.x, enemy.y, range, aoeDamage);
           }
           
+          // 触发击中 Hook
+          this.hero.triggerHooks('onHit', enemy, result.damage);
+          
+          // 触发暴击 Hook
+          if (bullet.isCrit) {
+            this.hero.triggerHooks('onCrit', enemy, result.damage);
+          }
+          
+          // 触发造成伤害 Hook
+          this.hero.triggerHooks('onDamageDealt', enemy, result.damage, bullet.elementType);
+          
+          // 元素反应教程提示
+          if (result.reaction !== ReactionType.NONE) {
+            this.showReactionTutorial(result.reaction);
+          }
+          
           if (enemy.hp <= 0) {
+            // 触发击杀 Hook
+            this.hero.triggerHooks('onKill', enemy);
             this.killEnemy(enemy);
           }
           
@@ -831,17 +1015,11 @@ export default class Main {
     for (let eb of this.enemyBullets) {
       if (!eb.active) continue;
       const dist = Math.sqrt((eb.x - this.hero.x)**2 + (eb.y - this.hero.y)**2);
-      if (dist < 15) { // 判定范围
+        if (dist < 15) { // 判定范围
         eb.active = false;
-        const isHit = this.hero.takeDamage(eb.damage);
+        const isHit = this.hero.takeDamage(eb.damage, null); // 敌人子弹没有攻击者对象
         if (isHit) {
-          this.floatingTexts.push(new FloatingText(
-            this.hero.x, 
-            this.hero.y, 
-            `-${eb.damage}`, 
-            '#e74c3c',
-            20
-          ));
+          this.spawnDamageText(this.hero, eb.damage, null, '#e74c3c', 20, true);
           // 玩家受伤粒子
           this.spawnExplosion(this.hero.x, this.hero.y, '#ff0000', 5);
           this.triggerShake(15, 5); // 中震动
@@ -849,7 +1027,7 @@ export default class Main {
       }
     }
 
-    // 3. 玩家吃经验球/金币
+    // 3. 玩家吃经验球/金币/道具
     for (let orb of this.orbs) {
       if (!orb.active) continue;
       const dist = Math.sqrt((orb.x - this.hero.x)**2 + (orb.y - this.hero.y)**2);
@@ -858,6 +1036,8 @@ export default class Main {
         orb.active = false;
         if (orb.type === PickupType.EXP) {
           this.currentExp += orb.value;
+          // 经验球非常频繁，一定要 random pitch
+          audio.play('exp', true);
           this.checkLevelUp();
         } else if (orb.type === PickupType.COIN) {
           // 应用贪婪天赋
@@ -865,33 +1045,43 @@ export default class Main {
           this.totalCoins += amount;
           // 显示金币获得提示
           this.floatingTexts.push(new FloatingText(orb.x, orb.y, `+$${amount}`, '#f1c40f', 20));
+          // 金币音效
+          audio.play('coin', true);
         } else if (orb.type === PickupType.HEALTH) {
           // 回血逻辑（狂战士不能回血）
           if (this.hero.trait !== 'blood_pact') {
             this.hero.hp = Math.min(this.hero.maxHp, this.hero.hp + orb.value);
           }
+        } else if (orb.type === PickupType.MAGNET) {
+          // 激活磁铁效果
+          this.activateMagnet();
         }
       }
     }
     
-    // 4. 敌人撞玩家
+    // 4. 玩家开宝箱
+    for (let chest of this.chests) {
+      if (!chest.active || chest.opened) continue;
+      const dist = Math.sqrt((chest.x - this.hero.x)**2 + (chest.y - this.hero.y)**2);
+      if (dist < 40) {
+        if (chest.open()) {
+          this.openChest(chest);
+        }
+      }
+    }
+    
+    // 5. 敌人撞玩家
     for (let enemy of this.enemies) {
       if (!enemy.active) continue;
       
       const dist = Math.sqrt((enemy.x - this.hero.x)**2 + (enemy.y - this.hero.y)**2);
       // 简单的圆形碰撞 (假设主角半径20, 敌人半径 width/2)
       if (dist < (20 + enemy.width / 2)) {
-        const isHit = this.hero.takeDamage(enemy.damage);
+        const isHit = this.hero.takeDamage(enemy.damage, enemy);
         if (isHit) {
           const shakePower = (enemy.type === 'boss' || enemy.type === 'elite') ? 10 : 5;
           this.triggerShake(15, shakePower); // 根据敌人类型调整震动
-          this.floatingTexts.push(new FloatingText(
-            this.hero.x,
-            this.hero.y,
-            `-${enemy.damage}`,
-            '#e74c3c',
-            20
-          ));
+          this.spawnDamageText(this.hero, enemy.damage, null, '#e74c3c', 20, true);
           this.spawnExplosion(this.hero.x, this.hero.y, '#ff0000', 5);
         }
       }
@@ -913,6 +1103,192 @@ export default class Main {
     return nearest;
   }
   
+  // 新增：障碍物碰撞逻辑
+  checkObstacleCollisions() {
+    // 1. 玩家撞障碍物
+    for (let obs of this.obstacles) {
+      if (!obs.active) continue;
+      
+      // 简单的矩形碰撞修正 (AABB vs Circle)
+      // 这里简化为两点距离判断阻挡 (假设障碍物也是圆的物理判定，虽然画的是方)
+      const dx = this.hero.x - obs.x;
+      const dy = this.hero.y - obs.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const minDist = (this.hero.width / 2) + (obs.width / 2);
+      
+      if (dist < minDist) {
+        // 发生碰撞，将玩家推开
+        const angle = Math.atan2(dy, dx);
+        const pushDist = minDist - dist;
+        this.hero.x += Math.cos(angle) * pushDist;
+        this.hero.y += Math.sin(angle) * pushDist;
+      }
+    }
+
+    // 2. 子弹撞障碍物
+    for (let b of this.bullets) {
+      if (!b.active) continue;
+      for (let obs of this.obstacles) {
+        if (!obs.active) continue;
+        
+        // 判定
+        const dx = b.x - obs.x;
+        const dy = b.y - obs.y;
+        if (Math.sqrt(dx*dx + dy*dy) < obs.width/2 + 5) {
+            b.active = false; // 子弹销毁
+            this.spawnExplosion(b.x, b.y, '#fff', 3); // 小火花
+            
+            // 如果是炸药桶，扣血
+            if (obs.type === ObstacleType.BARREL) {
+                const destroyed = obs.takeDamage(10); // 假设子弹伤害
+                if (destroyed) {
+                    this.explodeBarrel(obs);
+                } else {
+                    // 击中金属/障碍物
+                    audio.play('hit_metal', true);
+                }
+            } else {
+                // 击中柱子
+                audio.play('hit_metal', true);
+            }
+            break; // 子弹只撞一个
+        }
+      }
+    }
+  }
+  
+  // 伤害数字聚合系统
+  spawnDamageText(target, amount, text, color, size, canMerge = true) {
+    if (canMerge && amount > 0) {
+      // 1. 检查该目标头上是否已经有正在飘的伤害字
+      const existingText = this.floatingTexts.find(t => 
+        t.active &&
+        Math.abs(t.x - target.x) < 30 && 
+        Math.abs(t.y - (target.y - 20)) < 40 && // 距离较近
+        t.color === color && // 颜色（类型）相同
+        t.life > 30 // 刚飘出来不久
+      );
+
+      if (existingText && existingText.value > 0) {
+        existingText.addValue(amount);
+        return;
+      }
+    }
+    
+    // 2. 创建新的飘字
+    const displayText = text || (amount > 0 ? Math.floor(amount).toString() : '');
+    this.floatingTexts.push(new FloatingText(
+      target.x, 
+      target.y - 20, 
+      displayText, 
+      color,
+      size
+    ));
+  }
+  
+  explodeBarrel(barrel) {
+    // 炸药桶爆炸逻辑
+    this.triggerShake(20, 15); // 剧烈震动
+    this.spawnExplosion(barrel.x, barrel.y, '#e74c3c', 30); // 大火花
+    audio.play('explosion_small', false); // 小爆炸，不需要变调
+    
+    // 造成大范围伤害 (复用 Overload 逻辑)
+    // x, y, radius, damage
+    this.handleOverloadAoE(barrel.x, barrel.y, 200, 100); 
+  }
+  
+  updateMapZones() {
+    for (let zone of this.mapZones) {
+      // 检查玩家是否在区域内
+      if (this.hero.x > zone.x && this.hero.x < zone.x + zone.width &&
+          this.hero.y > zone.y && this.hero.y < zone.y + zone.height) {
+            
+        if (zone.type === ZoneType.SLOW) {
+          // 减速逻辑：抵消一半移动
+          if (this.hero.lastMoveX || this.hero.lastMoveY) {
+            this.hero.x -= (this.hero.lastMoveX || 0) * 0.5; // 抵消一半移动
+            this.hero.y -= (this.hero.lastMoveY || 0) * 0.5;
+          }
+        } else if (zone.type === ZoneType.DAMAGE) {
+          // 熔岩区域：每秒扣5点血
+          if (this.frameCount % 60 === 0) {
+            const isHit = this.hero.takeDamage(5);
+            if (isHit) {
+              this.floatingTexts.push(new FloatingText(this.hero.x, this.hero.y, "-5", '#e74c3c', 20));
+              this.spawnExplosion(this.hero.x, this.hero.y, '#e74c3c', 3);
+            }
+          }
+        } else if (zone.type === ZoneType.HEAL) {
+          // 泉水区域：每秒回复1点血
+          if (this.frameCount % 60 === 0 && this.hero.hp < this.hero.maxHp) {
+            this.hero.hp = Math.min(this.hero.maxHp, this.hero.hp + 1);
+          }
+        }
+      }
+    }
+  }
+  
+  checkShrineCollision() {
+    for (let shrine of this.shrines) {
+        if (!shrine.active) continue;
+        const dist = Math.sqrt((this.hero.x - shrine.x)**2 + (this.hero.y - shrine.y)**2);
+        if (dist < 40) {
+            shrine.active = false; // 消耗掉
+            // 给个强力 Buff
+            this.hero.invincibleTime = 600; // 10秒无敌
+            this.floatingTexts.push(new FloatingText(this.hero.x, this.hero.y - 40, "DIVINE POWER!", '#9b59b6', 30));
+            // 特效
+            this.spawnExplosion(shrine.x, shrine.y, '#9b59b6', 20);
+            this.triggerShake(30, 10);
+            audio.play('relic', false); // 获得遗物音效
+        }
+    }
+  }
+  
+  // 激活磁铁效果
+  activateMagnet() {
+    this.magnetActive = true;
+    this.magnetTimer = 300; // 持续5秒（60fps * 5）
+    this.floatingTexts.push(new FloatingText(
+      this.hero.x, 
+      this.hero.y - 30, 
+      "MAGNET ACTIVATED!", 
+      '#3498db',
+      28
+    ));
+    audio.play('levelup'); // 使用升级音效
+  }
+  
+  // 打开宝箱
+  openChest(chest) {
+    this.triggerShake(15, 10);
+    this.spawnExplosion(chest.x, chest.y, '#ffd700', 20);
+    audio.play('chest_open', false); // 宝箱音效，不需要变调
+    
+    // 奖励：1-3个随机升级
+    const rewardCount = 1 + Math.floor(Math.random() * 3);
+    const rewards = ['exp', 'coin', 'magnet'];
+    
+    for (let i = 0; i < rewardCount; i++) {
+      const rewardType = rewards[Math.floor(Math.random() * rewards.length)];
+      
+      if (rewardType === 'exp') {
+        // 直接给经验
+        this.currentExp += 100;
+        this.checkLevelUp();
+        this.floatingTexts.push(new FloatingText(chest.x, chest.y - 20, "+100 EXP", '#2ecc71', 24));
+      } else if (rewardType === 'coin') {
+        // 给金币
+        const coinAmount = 50 + Math.floor(Math.random() * 100);
+        this.totalCoins += coinAmount;
+        this.floatingTexts.push(new FloatingText(chest.x, chest.y - 20, `+$${coinAmount}`, '#f1c40f', 24));
+      } else if (rewardType === 'magnet') {
+        // 掉落磁铁道具
+        this.orbs.push(new ExpOrb(chest.x, chest.y, PickupType.MAGNET, 0));
+      }
+    }
+  }
+  
   /**
    * 处理 Overload 的 AoE 爆炸效果
    */
@@ -928,14 +1304,8 @@ export default class Main {
       if (dist <= radius) {
         enemy.hp -= damage;
         
-        // 显示 AoE 伤害数字（较小）
-        this.floatingTexts.push(new FloatingText(
-          enemy.x,
-          enemy.y - 20,
-          `-${damage.toFixed(0)}`,
-          '#f39c12',
-          18
-        ));
+        // 显示 AoE 伤害数字（较小，可以聚合）
+        this.spawnDamageText(enemy, damage, null, '#f39c12', 18, true);
         
         if (enemy.hp <= 0) {
           this.killEnemy(enemy);
@@ -1001,6 +1371,15 @@ export default class Main {
       }
     }
     
+    // 精英怪死亡时掉落宝箱
+    if (enemy.type === 'elite') {
+      // 30% 几率掉落宝箱
+      if (Math.random() < 0.3) {
+        this.chests.push(new Chest(enemy.x, enemy.y));
+        this.floatingTexts.push(new FloatingText(enemy.x, enemy.y - 20, "CHEST!", '#ffd700', 24));
+      }
+    }
+    
     // 如果 Boss 死了，直接胜利 (延迟一点)
     if (enemy.type === 'boss') {
       this.saveScore(); // 胜利保存
@@ -1028,6 +1407,17 @@ export default class Main {
   update() {
     // 如果不是 PLAYING 状态，不更新游戏逻辑
     if (this.state !== GameState.PLAYING) return;
+    
+    // 0. 暂停检查
+    if (this.uiSystem.isPaused) return;
+    
+    // 0.5. 教程暂停检查
+    if (this.tutorialPauseTimer > 0) {
+      this.tutorialPauseTimer--;
+      // 暂停期间只更新摄像机，不更新游戏逻辑
+      this.camera.follow(this.hero);
+      return;
+    }
 
     // 计算时间
     const now = Date.now();
@@ -1035,11 +1425,16 @@ export default class Main {
     if (dt >= 1) {
       this.currentTime += 1;
       this.lastTime = now;
+      
+      // 报告存活时间（成就系统）
+      this.achievementManager.report('max_time', this.currentTime);
     }
     
     // 检查游戏结束
     if (this.hero.isDead) {
       this.saveScore(); // 死亡保存（包含金币）
+      // 报告死亡统计
+      this.achievementManager.report('death_count', 1);
       this.state = GameState.GAME_OVER;
     }
     // 检查胜利 (时间到了且 Boss 还没出，或者 Boss 已死)
@@ -1049,16 +1444,22 @@ export default class Main {
     }
 
     this.frameCount++;
+    this.hero.frameCount = this.frameCount; // 同步帧计数到 Hero
     const input = this.joystick ? this.joystick.getInputVector() : { x: 0, y: 0 };
     this.hero.update(input);
+    
+    // 更新摄像机跟随
+    this.camera.follow(this.hero);
+    
+    // 检查障碍物碰撞 (物理阻挡)
+    this.checkObstacleCollisions();
 
     // 玩家射击 (改为接收数组)
     const newBullets = this.hero.tryAttack(this.enemies);
     if (newBullets && newBullets.length > 0) {
       this.bullets.push(...newBullets); // 展开数组推入
       
-      // 播放射击音效
-      audio.play('shoot');
+      // 射击音效已在 Hero.tryAttack 中播放（根据元素类型）
       
       // 新增：枪口闪光
       // 计算射击角度 (取第一颗子弹的方向)
@@ -1093,13 +1494,61 @@ export default class Main {
     
     this.bullets.forEach(b => b.update());
     this.enemyBullets.forEach(eb => eb.update()); // 更新敌人子弹
+    // 磁铁效果：全屏吸引经验球
+    if (this.magnetActive) {
+      this.magnetTimer--;
+      if (this.magnetTimer <= 0) {
+        this.magnetActive = false;
+      } else {
+        // 磁铁激活时，所有经验球快速飞向玩家
+        this.orbs.forEach(orb => {
+          if (!orb.active) return;
+          const dx = this.hero.x - orb.x;
+          const dy = this.hero.y - orb.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist > 0) {
+            // 极快速度飞向玩家
+            const speed = 15;
+            orb.x += (dx / dist) * speed;
+            orb.y += (dy / dist) * speed;
+          }
+        });
+      }
+    }
+    
     this.orbs.forEach(o => o.update(this.hero)); // 更新经验球
     this.floatingTexts.forEach(ft => ft.update()); // 更新浮动文字
+    this.chests.forEach(c => c.update()); // 更新宝箱动画
     
     // 粒子更新
     this.particles.forEach(p => p.update());
 
+    // 1. 空间网格重置与填充
+    this.spatialGrid.clear();
+    this.enemies.forEach(e => this.spatialGrid.add(e));
+    
+    // 2. 更新地形效果
+    this.updateMapZones();
+    
+    // 3. 检查祭坛交互
+    this.checkShrineCollision();
+    
+    // 4. 更新预警圈
+    this.uiSystem.updateWarnings();
+    
+    // 5. 阵型生成测试 (例如每分钟触发一次尸潮)
+    if (this.frameCount > 0 && this.frameCount % 3600 === 0) { // 60秒
+        // 飘字提示
+        this.floatingTexts.push(new FloatingText(this.hero.x, this.hero.y - 50, "HORDE INCOMING!", '#e74c3c', 30));
+        FormationManager.spawnHorde(this, this.camera);
+    }
+
     this.checkCollisions();
+    
+    // 清理障碍物（被破坏的）
+    this.obstacles = this.obstacles.filter(o => o.active);
+    // 清理已打开的宝箱（动画结束后）
+    this.chests = this.chests.filter(c => c.active && (!c.opened || c.openAnimation > 0));
 
     // --- 优化后的清理逻辑（使用对象池） ---
     
@@ -1140,16 +1589,38 @@ export default class Main {
     this.ctx.save();
     this.ctx.translate(offsetX, offsetY);
     
-    // 绘制背景图
+    // --- 关键改动：背景渲染 ---
+    // 背景图现在需要平铺 (Tiling) 或者绘制一张超级大的图
+    // 简单方案：绘制一张平铺的图
     if (this.images && this.images['bg']) {
-      // 简单拉伸填满屏幕
-      this.ctx.drawImage(this.images['bg'], 0, 0, this.screenWidth, this.screenHeight);
+        // 算出当前视口内需要画哪些背景块
+        const bgImg = this.images['bg'];
+        const bgW = this.screenWidth; // 假设背景图大小等于屏幕大小
+        const bgH = this.screenHeight;
+        
+        // 计算起始偏移
+        const startX = Math.floor(this.camera.x / bgW) * bgW;
+        const startY = Math.floor(this.camera.y / bgH) * bgH;
+        
+        for (let x = startX; x < this.camera.x + this.screenWidth; x += bgW) {
+            for (let y = startY; y < this.camera.y + this.screenHeight; y += bgH) {
+                // 这里的坐标需要减去 camera 坐标
+                this.ctx.drawImage(bgImg, x - this.camera.x, y - this.camera.y, bgW, bgH);
+            }
+        }
     } else {
-      // 没图时的备选方案
-      this.ctx.fillStyle = '#333333';
-      this.ctx.fillRect(0, 0, this.screenWidth, this.screenHeight);
+        // 纯色背景
+        this.ctx.fillStyle = '#333';
+        this.ctx.fillRect(0, 0, this.screenWidth, this.screenHeight);
     }
 
+    // 如果是图鉴界面
+    if (this.compendium) {
+      this.compendium.render(this.ctx);
+      this.ctx.restore();
+      return;
+    }
+    
     // 如果是 START 界面
     if (this.state === GameState.START) {
       this.renderStartScreen();
@@ -1166,6 +1637,22 @@ export default class Main {
       this.ctx.restore();
       return;
     }
+
+    // --- 关键改动：应用摄像机偏移 ---
+    this.ctx.save();
+    
+    // 全局偏移：所有游戏内的物体绘制时，都不需要自己减去 camera.x
+    // 只需要画在它们的世界坐标上，Canvas 会自动处理偏移
+    this.ctx.translate(-this.camera.x, -this.camera.y); 
+
+    // 绘制地形 (最底层)
+    this.mapZones.forEach(z => z.render(this.ctx));
+    
+    // 绘制地面引导文字（最底层）
+    this.renderTutorial(this.ctx);
+    
+    // 绘制预警圈 (在敌人和玩家之下)
+    this.uiSystem.renderWarnings(this.ctx, this.camera);
 
     // 游戏内渲染 - Y-Sorting（根据 y 坐标排序，实现正确的遮挡关系）
     // 1. 收集所有需要参与 Y-Sort 的实体
@@ -1184,11 +1671,32 @@ export default class Main {
       renderList.push({ entity: o, type: 'orb' });
     });
     
+    // 添加障碍物
+    this.obstacles.forEach(o => {
+      renderList.push({ entity: o, type: 'obstacle' });
+    });
+    
+    // 添加宝箱
+    this.chests.forEach(c => {
+      renderList.push({ entity: c, type: 'chest' });
+    });
+    
+    // 添加祭坛
+    this.shrines.forEach(s => {
+      if (s.active) {
+        renderList.push({ entity: s, type: 'shrine' });
+      }
+    });
+    
     // 2. 根据 y 坐标排序（y 越小越靠前画）
     renderList.sort((a, b) => a.entity.y - b.entity.y);
     
-    // 3. 遍历绘制
+    // 3. 遍历绘制（性能剔除）
     renderList.forEach(item => {
+      // 性能剔除：只渲染视野内的物体
+      if (!this.isInViewport(item.entity.x, item.entity.y, Math.max(item.entity.width || 50, item.entity.height || 50))) {
+        return;
+      }
       if (item.type === 'hero') {
         item.entity.render(this.ctx, this.images ? this.images['hero'] : null);
       } else if (item.type === 'enemy') {
@@ -1199,19 +1707,56 @@ export default class Main {
         item.entity.render(this.ctx, this.images ? this.images[imgKey] : null);
       } else if (item.type === 'orb') {
         item.entity.render(this.ctx, this.images ? this.images['exp_orb'] : null);
+      } else if (item.type === 'obstacle') {
+        item.entity.render(this.ctx); // Obstacle 自带 render
+      } else if (item.type === 'chest') {
+        item.entity.render(this.ctx); // Chest 自带 render
+      } else if (item.type === 'shrine') {
+        item.entity.render(this.ctx); // Shrine 自带 render
       }
     });
     
-    // 4. 子弹和特效通常在最上层，不需要参与 Y-Sort
-    this.bullets.forEach(b => b.render(this.ctx, this.images ? this.images['bullet'] : null));
-    this.enemyBullets.forEach(eb => eb.render(this.ctx, this.images ? this.images['bullet'] : null));
+    // 4. 子弹和特效通常在最上层，不需要参与 Y-Sort（性能剔除）
+    this.bullets.forEach(b => {
+      // 性能剔除：只渲染视野内的子弹
+      if (this.isInViewport(b.x, b.y, 10)) {
+        b.render(this.ctx, this.images ? this.images['bullet'] : null);
+      }
+    });
+    this.enemyBullets.forEach(eb => {
+      if (this.isInViewport(eb.x, eb.y, 10)) {
+        eb.render(this.ctx, this.images ? this.images['bullet'] : null);
+      }
+    });
     
-    // 粒子渲染
-    this.particles.forEach(p => p.render(this.ctx));
+    // 粒子渲染（性能剔除）
+    this.particles.forEach(p => {
+      if (this.isInViewport(p.x, p.y, 20)) {
+        p.render(this.ctx);
+      }
+    });
     
-    this.floatingTexts.forEach(ft => ft.render(this.ctx));
+    this.floatingTexts.forEach(ft => {
+      if (this.isInViewport(ft.x, ft.y, 50)) {
+        ft.render(this.ctx);
+      }
+    });
+    
+    // --- 结束摄像机偏移 ---
+    this.ctx.restore(); 
+
+    // --- UI 层 (HUD) ---
+    // UI 不需要摄像机偏移，所以写在 restore 之后
     if (this.joystick) {
       this.joystick.render(this.ctx);
+    }
+    
+    // 绘制暂停按钮 (UI层，无偏移)
+    if (!this.uiSystem.isPaused && this.state === GameState.PLAYING) {
+        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        this.ctx.font = 'bold 20px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('II', this.screenWidth - 30, 40); // 暂停图标
     }
     
     // --- 新增：低血量红屏警示 ---
@@ -1237,6 +1782,23 @@ export default class Main {
     // ----------------------------
     
     this.renderHUD();
+    
+    // UI 系统：暂停菜单
+    this.uiSystem.renderPauseMenu(this.ctx);
+    
+    // UI 系统：屏幕外指示器 (寻找 Boss 和 宝箱)
+    if (this.state === GameState.PLAYING) {
+      // 收集目标
+      const targets = this.enemies.filter(e => e.type === 'boss' && e.active);
+      this.chests.forEach(c => { 
+        if (c.active && !c.opened) targets.push({...c, type: 'chest'}); 
+      });
+      this.shrines.forEach(s => { 
+        if (s.active) targets.push({...s, type: 'shrine'}); 
+      });
+      
+      this.uiSystem.renderOffScreenIndicators(this.ctx, this.camera, targets);
+    }
 
     if (this.state === GameState.LEVEL_UP) {
       this.renderLevelUpUI();
@@ -1256,6 +1818,11 @@ export default class Main {
         this.victorySoundPlayed = true;
       }
       this.renderVictoryUI();
+    }
+    
+    // 绘制地图边界视觉反馈
+    if (this.state === GameState.PLAYING) {
+      this.renderWorldBoundaries();
     }
     
     // 4. 恢复画布
@@ -1289,6 +1856,14 @@ export default class Main {
     this.ctx.fillStyle = '#fff';
     this.ctx.font = 'bold 20px Arial';
     this.ctx.fillText(`SHOP ($${this.totalCoins})`, this.screenWidth / 2, this.screenHeight / 2 + 132);
+    
+    // 绘制"图鉴"按钮
+    this.ctx.fillStyle = '#9b59b6';
+    this.ctx.fillRect(this.screenWidth / 2 - 80, this.screenHeight / 2 + 160, 160, 50);
+    this.ctx.fillStyle = '#fff';
+    this.ctx.font = 'bold 20px Arial';
+    const unlockedCount = wx.getStorageSync('unlocked_items')?.length || 0;
+    this.ctx.fillText(`COMPENDIUM (${unlockedCount})`, this.screenWidth / 2, this.screenHeight / 2 + 192);
   }
   
   renderShop() {
@@ -1372,6 +1947,15 @@ export default class Main {
     });
   }
 
+  // 性能剔除：判断物体是否在视野内
+  isInViewport(x, y, radius = 0) {
+    const padding = radius + 50; // 额外padding，避免边缘闪烁
+    return !(x + padding < this.camera.x || 
+             x - padding > this.camera.x + this.screenWidth ||
+             y + padding < this.camera.y || 
+             y - padding > this.camera.y + this.screenHeight);
+  }
+  
   renderHUD() {
     // 1. 经验条 (顶部，使用安全区域 padding)
     const expBarY = 10;
@@ -1418,6 +2002,236 @@ export default class Main {
     this.ctx.font = '14px Arial';
     this.ctx.textAlign = 'center';
     this.ctx.fillText(`${Math.ceil(this.hero.hp)}/${this.hero.maxHp}`, this.screenWidth / 2, hpY + 15);
+    
+    // 5. 小地图 (右上角)
+    if (this.state === GameState.PLAYING) {
+      this.renderMinimap();
+    }
+    
+    // 6. 磁铁状态提示
+    if (this.magnetActive) {
+      this.ctx.fillStyle = 'rgba(52, 152, 219, 0.7)';
+      this.ctx.font = 'bold 16px Arial';
+      this.ctx.textAlign = 'center';
+      this.ctx.fillText(`MAGNET: ${Math.ceil(this.magnetTimer / 60)}s`, this.screenWidth / 2, hpY - 30);
+    }
+  }
+  
+  // 渲染小地图
+  renderMinimap() {
+    const mapScale = 0.1; // 缩放比例，世界 2000 -> 小地图 200
+    const mapW = this.worldWidth * mapScale;
+    const mapH = this.worldHeight * mapScale;
+    const mapX = this.screenWidth - mapW - 20;
+    const mapY = 20;
+    
+    // 小地图背景
+    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    this.ctx.fillRect(mapX, mapY, mapW, mapH);
+    this.ctx.strokeStyle = '#fff';
+    this.ctx.lineWidth = 2;
+    this.ctx.strokeRect(mapX, mapY, mapW, mapH);
+    
+    // 绘制摄像机视野框
+    this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    this.ctx.lineWidth = 1;
+    const viewX = mapX + this.camera.x * mapScale;
+    const viewY = mapY + this.camera.y * mapScale;
+    const viewW = this.screenWidth * mapScale;
+    const viewH = this.screenHeight * mapScale;
+    this.ctx.strokeRect(viewX, viewY, viewW, viewH);
+    
+    // 绘制主角（绿点）
+    const heroX = mapX + this.hero.x * mapScale;
+    const heroY = mapY + this.hero.y * mapScale;
+    this.ctx.fillStyle = '#0f0';
+    this.ctx.beginPath();
+    this.ctx.arc(heroX, heroY, 3, 0, Math.PI * 2);
+    this.ctx.fill();
+    
+    // 绘制敌人（红点：Boss/精英，橙点：普通）
+    this.enemies.forEach(e => {
+      if (!e.active) return;
+      const ex = mapX + e.x * mapScale;
+      const ey = mapY + e.y * mapScale;
+      
+      if (ex < mapX || ex > mapX + mapW || ey < mapY || ey > mapY + mapH) return;
+      
+      if (e.type === 'boss') {
+        this.ctx.fillStyle = '#f00';
+        this.ctx.beginPath();
+        this.ctx.arc(ex, ey, 4, 0, Math.PI * 2);
+        this.ctx.fill();
+      } else if (e.type === 'elite') {
+        this.ctx.fillStyle = '#8e44ad';
+        this.ctx.beginPath();
+        this.ctx.arc(ex, ey, 3, 0, Math.PI * 2);
+        this.ctx.fill();
+      } else {
+        this.ctx.fillStyle = '#e74c3c';
+        this.ctx.fillRect(ex - 1, ey - 1, 2, 2);
+      }
+    });
+    
+    // 绘制掉落物（蓝点：经验球，黄点：金币，绿点：血包）
+    this.orbs.forEach(o => {
+      if (!o.active) return;
+      const ox = mapX + o.x * mapScale;
+      const oy = mapY + o.y * mapScale;
+      
+      if (ox < mapX || ox > mapX + mapW || oy < mapY || oy > mapY + mapH) return;
+      
+      if (o.type === PickupType.EXP) {
+        this.ctx.fillStyle = '#2ecc71';
+      } else if (o.type === PickupType.COIN) {
+        this.ctx.fillStyle = '#f1c40f';
+      } else if (o.type === PickupType.HEALTH) {
+        this.ctx.fillStyle = '#e74c3c';
+      } else if (o.type === PickupType.MAGNET) {
+        this.ctx.fillStyle = '#3498db';
+      }
+      this.ctx.fillRect(ox - 1, oy - 1, 2, 2);
+    });
+    
+    // 绘制宝箱（金色点）
+    this.chests.forEach(c => {
+      if (!c.active) return;
+      const cx = mapX + c.x * mapScale;
+      const cy = mapY + c.y * mapScale;
+      
+      if (cx < mapX || cx > mapX + mapW || cy < mapY || cy > mapY + mapH) return;
+      
+      this.ctx.fillStyle = c.opened ? '#95a5a6' : '#ffd700';
+      this.ctx.beginPath();
+      this.ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+      this.ctx.fill();
+    });
+  }
+  
+  // 渲染地图边界视觉反馈
+  // 显示元素反应教程
+  showReactionTutorial(reactionType) {
+    const tutorialKey = `reaction_${reactionType}`;
+    if (this.seenTutorials.includes(tutorialKey)) return; // 已看过，不再显示
+    
+    this.seenTutorials.push(tutorialKey);
+    wx.setStorageSync('seen_tutorials', this.seenTutorials);
+    
+    // 暂停游戏 0.5 秒，显示教程
+    this.tutorialPauseTimer = 30; // 30帧 = 0.5秒（60fps）
+    
+    // 显示反应名称和效果
+    let reactionName = '';
+    let reactionDesc = '';
+    switch(reactionType) {
+      case ReactionType.VAPORIZE:
+        reactionName = 'VAPORIZE (蒸发)';
+        reactionDesc = '水 + 火 = 2.0 倍伤害！';
+        break;
+      case ReactionType.OVERLOAD:
+        reactionName = 'OVERLOAD (超载)';
+        reactionDesc = '火 + 雷 = 范围爆炸！';
+        break;
+      case ReactionType.FREEZE:
+        reactionName = 'FREEZE (冻结)';
+        reactionDesc = '水 + 冰 = 强控效果！';
+        break;
+      case ReactionType.MELT:
+        reactionName = 'MELT (融化)';
+        reactionDesc = '火 + 冰 = 增伤效果！';
+        break;
+      case ReactionType.SUPERCONDUCT:
+        reactionName = 'SUPERCONDUCT (超导)';
+        reactionDesc = '雷 + 冰 = 范围减防！';
+        break;
+    }
+    
+    // 创建大型飘字
+    this.floatingTexts.push(new FloatingText(
+      this.hero.x,
+      this.hero.y - 50,
+      reactionName,
+      '#f1c40f',
+      40
+    ));
+    this.floatingTexts.push(new FloatingText(
+      this.hero.x,
+      this.hero.y - 20,
+      reactionDesc,
+      '#fff',
+      24
+    ));
+  }
+  
+  // 渲染新手引导（地面文字）
+  renderTutorial(ctx) {
+    ctx.save();
+    ctx.translate(-this.camera.x, -this.camera.y);
+    
+    ctx.font = "bold 40px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    
+    this.floorDecals.forEach(d => {
+      if (d.opacity > 0) {
+        // 距离主角越远越淡
+        const dist = Math.sqrt((d.x - this.hero.x)**2 + (d.y - this.hero.y)**2);
+        const distFade = Math.max(0, 1 - dist / 500); // 500像素外完全透明
+        
+        ctx.fillStyle = `rgba(255, 255, 255, ${d.opacity * distFade * 0.5})`;
+        ctx.strokeStyle = `rgba(0, 0, 0, ${d.opacity * distFade * 0.8})`;
+        ctx.lineWidth = 3;
+        ctx.strokeText(d.text, d.x, d.y);
+        ctx.fillText(d.text, d.x, d.y);
+      }
+    });
+    
+    ctx.restore();
+  }
+  
+  renderWorldBoundaries() {
+    this.ctx.save();
+    this.ctx.translate(-this.camera.x, -this.camera.y);
+    
+    // 绘制边界线（红色虚线）
+    this.ctx.strokeStyle = 'rgba(231, 76, 60, 0.5)';
+    this.ctx.lineWidth = 3;
+    this.ctx.setLineDash([10, 5]);
+    
+    // 左边界
+    if (this.camera.x < 50) {
+      this.ctx.beginPath();
+      this.ctx.moveTo(0, 0);
+      this.ctx.lineTo(0, this.worldHeight);
+      this.ctx.stroke();
+    }
+    
+    // 右边界
+    if (this.camera.x + this.screenWidth > this.worldWidth - 50) {
+      this.ctx.beginPath();
+      this.ctx.moveTo(this.worldWidth, 0);
+      this.ctx.lineTo(this.worldWidth, this.worldHeight);
+      this.ctx.stroke();
+    }
+    
+    // 上边界
+    if (this.camera.y < 50) {
+      this.ctx.beginPath();
+      this.ctx.moveTo(0, 0);
+      this.ctx.lineTo(this.worldWidth, 0);
+      this.ctx.stroke();
+    }
+    
+    // 下边界
+    if (this.camera.y + this.screenHeight > this.worldHeight - 50) {
+      this.ctx.beginPath();
+      this.ctx.moveTo(0, this.worldHeight);
+      this.ctx.lineTo(this.worldWidth, this.worldHeight);
+      this.ctx.stroke();
+    }
+    
+    this.ctx.setLineDash([]);
+    this.ctx.restore();
   }
 
   renderLevelUpUI() {

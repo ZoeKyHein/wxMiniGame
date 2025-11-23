@@ -18,5 +18,6 @@ export const ReactionType = {
 export const PickupType = {
   EXP: 'exp',
   COIN: 'coin',
-  HEALTH: 'health'
+  HEALTH: 'health',
+  MAGNET: 'magnet' // 新增：磁铁道具
 };

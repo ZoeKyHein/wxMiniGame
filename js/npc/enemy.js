@@ -8,10 +8,10 @@ let enemyIdCounter = 0;
 export default class Enemy {
   // 新增 type 参数，默认 'normal'
   // 新增 hpMultiplier 参数，用于动态调整血量（数值平衡）
-  constructor(screenWidth, screenHeight, type = 'normal', hpMultiplier = 1) {
+  constructor(worldWidth, worldHeight, type = 'normal', hpMultiplier = 1) {
     this.id = enemyIdCounter++; // 唯一 ID
-    this.screenWidth = screenWidth;
-    this.screenHeight = screenHeight;
+    this.worldWidth = worldWidth;
+    this.worldHeight = worldHeight;
     this.type = type; // 'normal' | 'elite' | 'boss' | 'charger' (新增)
     
     this.initPosition();
@@ -65,15 +65,21 @@ export default class Enemy {
     this.burnTimer = 0;    // 燃烧倒计时
     this.burnDamage = 0;   // 燃烧每跳伤害
     this.hitFlashTimer = 0; // 受击白闪倒计时
+    
+    // --- 程序化动画 ---
+    this.walkCycle = 0; // 走路循环计数
+    this.lastX = this.x; // 记录上一帧位置
+    this.lastY = this.y;
   }
 
   // ... (保留 initPosition 和 update) ...
-  initPosition() { /* 保持不变 */ 
+  initPosition() { 
+    // 在世界范围内随机生成，但会在后续 spawnEnemy 中被覆盖
     const side = Math.floor(Math.random() * 4);
-    if (side === 0) { this.x = Math.random() * this.screenWidth; this.y = -50; } 
-    else if (side === 1) { this.x = this.screenWidth + 50; this.y = Math.random() * this.screenHeight; } 
-    else if (side === 2) { this.x = Math.random() * this.screenWidth; this.y = this.screenHeight + 50; } 
-    else { this.x = -50; this.y = Math.random() * this.screenHeight; }
+    if (side === 0) { this.x = Math.random() * this.worldWidth; this.y = -50; } 
+    else if (side === 1) { this.x = this.worldWidth + 50; this.y = Math.random() * this.worldHeight; } 
+    else if (side === 2) { this.x = Math.random() * this.worldWidth; this.y = this.worldHeight + 50; } 
+    else { this.x = -50; this.y = Math.random() * this.worldHeight; }
   }
 
   /**
@@ -125,6 +131,16 @@ export default class Enemy {
     if (dist > 0) {
       this.x += (dx / dist) * currentSpeed;
       this.y += (dy / dist) * currentSpeed;
+      
+      // 更新走路循环
+      const moved = Math.sqrt((this.x - this.lastX)**2 + (this.y - this.lastY)**2);
+      if (moved > 0.1) {
+        this.walkCycle += 0.15;
+      } else {
+        this.walkCycle *= 0.9;
+      }
+      this.lastX = this.x;
+      this.lastY = this.y;
     }
 
     // Boss 射击逻辑
@@ -212,18 +228,31 @@ export default class Enemy {
   render(ctx, img) {
     if (!this.active) return;
 
+    // --- 程序化动画：计算挤压拉伸和旋转 ---
+    const isMoving = (Math.abs(this.x - this.lastX) > 0.1 || Math.abs(this.y - this.lastY) > 0.1);
+    
+    // 计算缩放 (挤压拉伸)
+    const scaleY = 1 - Math.abs(Math.sin(this.walkCycle)) * 0.1; 
+    const scaleX = 1 + Math.abs(Math.sin(this.walkCycle)) * 0.05;
+    
+    // 计算旋转 (左右摇摆)
+    const rotateAngle = Math.sin(this.walkCycle) * 0.1;
+
     ctx.save();
     ctx.translate(this.x, this.y);
     
-    // --- 新增：绘制阴影 ---
+    // --- 绘制阴影 (永远在脚下，不随身体旋转) ---
     ctx.save();
     ctx.scale(1, 0.5); // 压扁成椭圆
     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
     ctx.beginPath();
-    ctx.arc(0, this.height, this.width / 2, 0, Math.PI * 2);
+    ctx.arc(0, this.height, this.width / 2 * scaleX, 0, Math.PI * 2); // 阴影随宽度变化
     ctx.fill();
     ctx.restore();
-    // ---------------------
+    
+    // --- 本体变换 ---
+    ctx.rotate(rotateAngle);
+    ctx.scale(scaleX, scaleY);
     
     // 1. 绘制怪物本体
     if (img) {

@@ -44,6 +44,8 @@ export default class ExpOrb {
         ctx.fillStyle = '#f1c40f'; // 金
       } else if (this.type === PickupType.HEALTH) {
         ctx.fillStyle = '#e74c3c'; // 红
+      } else if (this.type === PickupType.MAGNET) {
+        ctx.fillStyle = '#3498db'; // 蓝
       }
       ctx.fill();
       ctx.strokeStyle = '#fff';

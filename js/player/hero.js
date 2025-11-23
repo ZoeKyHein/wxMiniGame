@@ -1,13 +1,16 @@
 import Bullet from '../weapon/bullet.js';
 import { ElementType } from '../base/constants.js'; // 引入常量
 import { pool } from '../base/pool.js'; // 引入对象池
+import { audio } from '../base/audio.js'; // 引入音频管理器
 
 export default class Hero {
-  constructor(screenWidth, screenHeight, config = {}) {
+  constructor(screenWidth, screenHeight, worldWidth, worldHeight, config = {}) {
     this.screenWidth = screenWidth;
     this.screenHeight = screenHeight;
-    this.x = screenWidth / 2;
-    this.y = screenHeight / 2;
+    this.worldWidth = worldWidth;
+    this.worldHeight = worldHeight;
+    this.x = worldWidth / 2;
+    this.y = worldHeight / 2;
     this.width = 40;
     this.height = 40;
     this.speed = config.baseSpeed || 4;
@@ -71,34 +74,128 @@ export default class Hero {
       ElementType.WATER
     ];
     this.currentElementIndex = 0;
+    
+    // --- 新增：Hook 系统 ---
+    this.hooks = {
+      onHit: [],          // 击中敌人时
+      onKill: [],         // 击杀敌人时
+      onTakeDamage: [],   // 受伤时
+      onUpdate: [],       // 每帧
+      onAttack: [],       // 攻击/射击时
+      onDamageDealt: [],  // 造成伤害时
+      onCrit: [],         // 暴击时
+      onMove: []          // 移动时
+    };
+    
+    // 新增通用属性，供道具修改
+    this.luck = 0;
+    this.expMultiplier = 1;
+    this.scale = 1; // 体型
+    this.damageReduction = 0;
+    this.shield = 0;
+    this.maxShield = 0;
+    this.killStack = 0;
+    this.lastMoveX = 0;
+    this.lastMoveY = 0;
+    
+    // --- 程序化动画 ---
+    this.walkCycle = 0; // 走路循环计数
+  }
+  
+  // 注册 Hook
+  addHook(eventName, callback) {
+    if (this.hooks[eventName]) {
+      this.hooks[eventName].push(callback);
+    }
+  }
+  
+  // 触发 Hook
+  triggerHooks(eventName, ...args) {
+    if (this.hooks[eventName]) {
+      // 构建上下文，让道具能访问游戏全局数据
+      const ctx = {
+        hero: this,
+        game: this.gameInstance || window.gameInstance,
+        frameCount: this.frameCount || 0,
+        utils: {
+          getDist: (a, b) => Math.sqrt((a.x - b.x)**2 + (a.y - b.y)**2)
+        }
+      };
+      
+      this.hooks[eventName].forEach(cb => {
+        try {
+          cb(ctx, ...args);
+        } catch (e) {
+          console.error('Hook error:', e);
+        }
+      });
+    }
   }
 
   update(inputVector) {
     // 移动逻辑保持不变
     if (inputVector.x !== 0 || inputVector.y !== 0) {
-      this.x += inputVector.x * this.speed;
-      this.y += inputVector.y * this.speed;
-      if (this.x < 0) this.x = 0;
-      if (this.y < 0) this.y = 0;
-      if (this.x > this.screenWidth) this.x = this.screenWidth;
-      if (this.y > this.screenHeight) this.y = this.screenHeight;
+      const moveX = inputVector.x * this.speed;
+      const moveY = inputVector.y * this.speed;
+      this.lastMoveX = moveX; // 记录移动量，用于减速区域
+      this.lastMoveY = moveY;
+      this.x += moveX;
+      this.y += moveY;
+      // 边界限制：改为 WorldWidth
+      if (this.x < 20) this.x = 20; // 留点边距
+      if (this.y < 20) this.y = 20;
+      if (this.x > this.worldWidth - 20) this.x = this.worldWidth - 20;
+      if (this.y > this.worldHeight - 20) this.y = this.worldHeight - 20;
+    } else {
+      this.lastMoveX = 0;
+      this.lastMoveY = 0;
     }
     
     if (this.attackCooldown > 0) this.attackCooldown--;
     
     // --- 新增：无敌帧递减 ---
     if (this.invincibleTime > 0) this.invincibleTime--;
+    
+    // 触发更新 Hook
+    this.triggerHooks('onUpdate');
+    
+    // 触发移动 Hook
+    if (inputVector.x !== 0 || inputVector.y !== 0) {
+      this.triggerHooks('onMove');
+      // 更新走路循环
+      this.walkCycle += 0.2;
+    } else {
+      // 站立时逐渐归位
+      this.walkCycle *= 0.9;
+    }
   }
   
   /**
    * 受到伤害
    * @returns {boolean} 是否真正受到了伤害
    */
-  takeDamage(amount) {
+  takeDamage(amount, attacker = null) {
     if (this.invincibleTime > 0 || this.isDead) return false;
 
-    this.hp -= amount;
+    // 应用伤害减免
+    const finalAmount = Math.floor(amount * (1 - (this.damageReduction || 0)));
+    
+    // 先扣护盾
+    if (this.shield > 0) {
+      const shieldDamage = Math.min(this.shield, finalAmount);
+      this.shield -= shieldDamage;
+      const remainingDamage = finalAmount - shieldDamage;
+      if (remainingDamage > 0) {
+        this.hp -= remainingDamage;
+      }
+    } else {
+      this.hp -= finalAmount;
+    }
+    
     this.invincibleTime = 30; // 被打后有0.5秒无敌时间（假设60fps）
+    
+    // 触发受伤 Hook
+    this.triggerHooks('onTakeDamage', attacker, finalAmount);
     
     if (this.hp <= 0) {
       this.hp = 0;
@@ -183,6 +280,16 @@ export default class Hero {
         
         bullets.push(b);
       }
+      
+      // 根据元素类型播放不同的射击音效（启用音高随机化）
+      let soundName = 'shoot_normal';
+      if (attackElement === ElementType.FIRE) soundName = 'shoot_fire';
+      else if (attackElement === ElementType.ICE) soundName = 'shoot_ice';
+      else if (attackElement === ElementType.LIGHTNING) soundName = 'shoot_lightning';
+      else if (attackElement === ElementType.WATER) soundName = 'shoot_water';
+      
+      // 射击音效启用音高随机化，防止听觉疲劳
+      audio.play(soundName, true);
 
       return bullets;
     }
