@@ -7,7 +7,8 @@ let enemyIdCounter = 0;
 
 export default class Enemy {
   // 新增 type 参数，默认 'normal'
-  constructor(screenWidth, screenHeight, type = 'normal') {
+  // 新增 hpMultiplier 参数，用于动态调整血量（数值平衡）
+  constructor(screenWidth, screenHeight, type = 'normal', hpMultiplier = 1) {
     this.id = enemyIdCounter++; // 唯一 ID
     this.screenWidth = screenWidth;
     this.screenHeight = screenHeight;
@@ -22,7 +23,7 @@ export default class Enemy {
       this.width = 100;
       this.height = 100;
       this.speed = 1;     // Boss 移动很慢
-      this.hp = 500;      // 血量极厚
+      this.hp = Math.floor(5000 * hpMultiplier);      // 血量极厚（提升到5000基础值）
       this.color = '#000'; // 黑色 (或者深紫)
       this.damage = 50;   // 碰撞伤害极高
       
@@ -33,14 +34,14 @@ export default class Enemy {
       this.width = 60;
       this.height = 60;
       this.speed = 1.5;
-      this.hp = 50;
+      this.hp = Math.floor(50 * hpMultiplier);
       this.color = '#8e44ad';
       this.damage = 20;
     } else if (this.type === 'charger') { // 新增冲锋怪
       this.width = 35;
       this.height = 35;
       this.speed = 3.5;
-      this.hp = 8;
+      this.hp = Math.floor(8 * hpMultiplier);
       this.color = '#e67e22'; // 橙色
       this.damage = 15;
       // 冲锋状态机: 0=追击, 1=蓄力, 2=冲锋, 3=硬直
@@ -51,7 +52,7 @@ export default class Enemy {
       this.width = 30;
       this.height = 30;
       this.speed = 2;
-      this.hp = 10;
+      this.hp = Math.floor(10 * hpMultiplier);
       this.color = '#e74c3c'; // 红色
       this.damage = 10;
     }
@@ -63,6 +64,7 @@ export default class Enemy {
     this.freezeTimer = 0; // 冻结倒计时
     this.burnTimer = 0;    // 燃烧倒计时
     this.burnDamage = 0;   // 燃烧每跳伤害
+    this.hitFlashTimer = 0; // 受击白闪倒计时
   }
 
   // ... (保留 initPosition 和 update) ...
@@ -79,6 +81,9 @@ export default class Enemy {
    */
   update(player) {
     if (this.hp <= 0) { this.active = false; return null; }
+    
+    // 受击白闪倒计时递减
+    if (this.hitFlashTimer > 0) this.hitFlashTimer--;
 
     // 1. 处理燃烧 (DoT)
     if (this.burnTimer > 0) {
@@ -204,65 +209,123 @@ export default class Enemy {
     return bullets;
   }
 
-  render(ctx) {
+  render(ctx, img) {
     if (!this.active) return;
 
-    // 绘制 Boss 边框
-    if (this.type === 'boss') {
-      ctx.strokeStyle = '#f1c40f'; // 金色边框
-      ctx.lineWidth = 5;
-      ctx.strokeRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
-    }
-
-    // 冲锋怪画成菱形 (旋转的矩形)
-    if (this.type === 'charger') {
-      ctx.save();
-      ctx.translate(this.x, this.y);
-      ctx.rotate(Math.PI / 4); // 旋转 45度
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    
+    // --- 新增：绘制阴影 ---
+    ctx.save();
+    ctx.scale(1, 0.5); // 压扁成椭圆
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.beginPath();
+    ctx.arc(0, this.height, this.width / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    // ---------------------
+    
+    // 1. 绘制怪物本体
+    if (img) {
+      // 如果处于白闪状态，修改混合模式
+      if (this.hitFlashTimer > 0) {
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.8;
+      }
       
-      // 蓄力时变白/闪烁
-      if (this.chargeState === 1) {
+      // 冲锋怪蓄力闪烁
+      if (this.type === 'charger' && this.chargeState === 1) {
         if (Math.floor(Date.now() / 50) % 2 === 0) {
-          ctx.fillStyle = '#fff';
+          ctx.globalCompositeOperation = 'lighter';
+        }
+      }
+      
+      // 冲锋怪旋转
+      if (this.type === 'charger') {
+        ctx.rotate(Math.PI / 4);
+      }
+      
+      ctx.drawImage(img, -this.width / 2, -this.height / 2, this.width, this.height);
+      
+      // 恢复混合模式
+      if (this.hitFlashTimer > 0) {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1.0;
+      }
+    } else {
+      // 如果处于白闪状态，先画白色
+      if (this.hitFlashTimer > 0) {
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(-this.width / 2, -this.height / 2, this.width, this.height);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1.0;
+      }
+      
+      // 没图画方块 (保持原来的代码作为 fallback)
+      // 绘制 Boss 边框
+      if (this.type === 'boss') {
+        ctx.strokeStyle = '#f1c40f'; // 金色边框
+        ctx.lineWidth = 5;
+        ctx.strokeRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
+      }
+      
+      // 冲锋怪画成菱形 (旋转的矩形)
+      if (this.type === 'charger') {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(Math.PI / 4); // 旋转 45度
+        
+        // 蓄力时变白/闪烁
+        if (this.chargeState === 1) {
+          if (Math.floor(Date.now() / 50) % 2 === 0) {
+            ctx.fillStyle = '#fff';
+          } else {
+            ctx.fillStyle = this.color;
+          }
         } else {
           ctx.fillStyle = this.color;
         }
+        
+        ctx.fillRect(-this.width / 2, -this.height / 2, this.width, this.height);
+        ctx.restore();
       } else {
+        // 其他怪正常渲染
         ctx.fillStyle = this.color;
+        ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
       }
-      
-      ctx.fillRect(-this.width / 2, -this.height / 2, this.width, this.height);
-      ctx.restore();
-    } else {
-      // 其他怪正常渲染
-      ctx.fillStyle = this.color;
-      ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
     }
 
-    // 燃烧视觉效果 (橙色滤镜)
+    // 2. 燃烧效果 (在图片上盖一层半透明橙色)
     if (this.burnTimer > 0) {
       ctx.save();
-      ctx.globalAlpha = 0.6;
-      ctx.fillStyle = '#e67e22'; // 橙色
-      ctx.fillRect(this.x - this.width/2 - 2, this.y - this.height/2 - 2, this.width + 4, this.height + 4);
+      ctx.globalAlpha = 0.4; // 半透明
+      ctx.fillStyle = '#e67e22';
+      // 稍微画大一点点覆盖
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.width/2 + 2, 0, Math.PI*2);
+      ctx.fill();
       ctx.restore();
     }
 
-    // 冻结时的视觉效果 (覆盖一层浅蓝边框)
+    // 3. 冻结效果 (画个冰蓝色的框或者圆)
     if (this.freezeTimer > 0) {
       ctx.save();
       ctx.strokeStyle = '#74b9ff';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(this.x - this.width/2, this.y - this.height/2, this.width, this.height);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.width/2 + 4, 0, Math.PI*2);
+      ctx.stroke();
       ctx.restore();
     }
 
-    // 元素附着点
+    // 4. 元素附着点
     if (this.attachedElement !== ElementType.NONE) {
       ctx.save();
       ctx.fillStyle = ElementalSystem.getColor(this.attachedElement);
       ctx.beginPath();
-      ctx.arc(this.x, this.y - (this.height/2 + 15), 8, 0, Math.PI * 2);
+      ctx.arc(this.x, this.y - (this.height/2 + 10), 6, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }

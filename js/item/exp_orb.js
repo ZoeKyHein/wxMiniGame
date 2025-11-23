@@ -1,9 +1,12 @@
+import { PickupType } from '../base/constants.js';
+
 export default class ExpOrb {
-  constructor(x, y, value = 10) {
+  constructor(x, y, type = PickupType.EXP, value = 10) {
     this.x = x;
     this.y = y;
-    this.value = value; // 提供的经验值
-    this.radius = 5;
+    this.type = type;
+    this.value = value;
+    this.radius = (type === PickupType.COIN) ? 6 : 5;
     this.active = true;
     
     // 磁吸效果 (以后做，先预留属性)
@@ -25,15 +28,28 @@ export default class ExpOrb {
     }
   }
 
-  render(ctx) {
+  render(ctx, img) {
     if (!this.active) return;
     
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-    ctx.fillStyle = '#2ecc71'; // 绿色经验球
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.stroke();
+    // 如果有图片资源，这里可以根据 this.type 换不同的图
+    if (img && this.type === PickupType.EXP) {
+      ctx.drawImage(img, this.x - this.radius, this.y - this.radius, this.radius * 2, this.radius * 2);
+    } else {
+      // 代码绘制 fallback
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+      if (this.type === PickupType.EXP) {
+        ctx.fillStyle = '#2ecc71'; // 绿
+      } else if (this.type === PickupType.COIN) {
+        ctx.fillStyle = '#f1c40f'; // 金
+      } else if (this.type === PickupType.HEALTH) {
+        ctx.fillStyle = '#e74c3c'; // 红
+      }
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
   }
 }
 

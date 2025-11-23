@@ -11,7 +11,7 @@ export default class Joystick {
     this.knobRadius = 30;    // 摇杆头半径
     this.maxDist = 50;       // 摇杆头最大移动距离
 
-    // 摇杆中心位置 (屏幕左下角)
+    // 摇杆中心位置 (初始位置，会被触摸位置覆盖)
     this.x = 100;
     this.y = this.screenHeight - 100;
 
@@ -21,6 +21,10 @@ export default class Joystick {
     this.knobY = this.y;     // 摇杆头当前Y
     this.angle = 0;          // 当前角度 (弧度)
     this.power = 0;          // 推力力度 (0~1)
+    this.isVisible = false;  // 是否显示摇杆（浮动摇杆）
+
+    // 死区阈值：防止轻微抖动导致移动
+    this.deadZone = 5;
   }
 
   /**
@@ -33,14 +37,17 @@ export default class Joystick {
     const touches = e.changedTouches;
     for (let i = 0; i < touches.length; i++) {
       const touch = touches[i];
-      // 简单判断：触摸点在屏幕左半边，且大致在下半部分，就认为是操作摇杆
-      // 这里为了体验优化，设置判定区域为左半屏
+      // 简单判断：触摸点在屏幕左半边，就认为是操作摇杆
       if (touch.clientX < this.screenWidth / 2) {
         this.touchId = touch.identifier;
         
-        // 可选：摇杆中心跟随手指按下位置（动态摇杆），这里先用固定位置
-        // this.x = touch.clientX;
-        // this.y = touch.clientY; 
+        // --- 浮动摇杆：设置摇杆中心为当前手指位置 ---
+        this.x = touch.clientX;
+        this.y = touch.clientY;
+        this.knobX = this.x;
+        this.knobY = this.y;
+        this.isVisible = true; // 显示摇杆
+        // -----------------------------------
         
         this.updateKnobPosition(touch.clientX, touch.clientY);
         break;
@@ -83,11 +90,20 @@ export default class Joystick {
     const dy = touchY - this.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
 
+    // 死区处理：距离太小视为静止
+    if (distance < this.deadZone) {
+      this.power = 0;
+      this.knobX = this.x;
+      this.knobY = this.y;
+      return;
+    }
+
     this.angle = Math.atan2(dy, dx);
     
     // 限制摇杆头距离
     const dist = Math.min(distance, this.maxDist);
-    this.power = dist / this.maxDist; // 计算力度
+    const mapped = (dist - this.deadZone) / (this.maxDist - this.deadZone);
+    this.power = Math.min(1, Math.max(0, mapped)); // 计算力度并限制在 0~1
 
     this.knobX = this.x + Math.cos(this.angle) * dist;
     this.knobY = this.y + Math.sin(this.angle) * dist;
@@ -98,6 +114,7 @@ export default class Joystick {
     this.knobX = this.x;
     this.knobY = this.y;
     this.power = 0;
+    this.isVisible = false; // 隐藏摇杆
   }
 
   /**
@@ -112,6 +129,9 @@ export default class Joystick {
   }
 
   render(ctx) {
+    // 浮动摇杆：不触摸时不显示
+    if (!this.isVisible) return;
+    
     // 绘制底座
     ctx.save();
     ctx.globalAlpha = 0.3;

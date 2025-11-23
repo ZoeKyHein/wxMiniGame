@@ -1,39 +1,63 @@
 export default class Particle {
-  constructor(x, y, color) {
+  constructor(x, y, color, config = {}) {
+    this.reset(x, y, color, config);
+  }
+
+  reset(x, y, color, config = {}) {
     this.x = x;
     this.y = y;
     this.color = color;
-    this.size = Math.random() * 3 + 2; // 随机大小
-    this.life = 30 + Math.random() * 20; // 存活时间
+    
+    // 默认配置，支持覆盖
+    this.size = config.size || (Math.random() * 3 + 2);
+    this.life = config.life || (20 + Math.random() * 10);
     this.maxLife = this.life;
     
-    // 爆炸飞溅速度
-    const angle = Math.random() * Math.PI * 2;
-    const speed = Math.random() * 3 + 1;
+    // 速度与方向
+    const speed = config.speed || (Math.random() * 3 + 1);
+    const angle = config.angle !== undefined ? config.angle : (Math.random() * Math.PI * 2);
     this.vx = Math.cos(angle) * speed;
     this.vy = Math.sin(angle) * speed;
     
-    // 摩擦力 (慢慢停下)
-    this.friction = 0.95;
-    // 重力 (可选，横版游戏通常不需要，或者很小)
-    // this.gravity = 0.1;
+    // 物理属性
+    this.friction = config.friction || 0.9; // 摩擦力
+    this.gravity = config.gravity || 0;      // 重力
+    this.shrink = config.shrink || 0.1;      // 消失时缩小速度
+    
+    this.shape = config.shape || 'circle';   // 'circle' | 'rect'
   }
 
   update() {
     this.x += this.vx;
     this.y += this.vy;
+    this.vy += this.gravity;
     
     this.vx *= this.friction;
     this.vy *= this.friction;
     
     this.life--;
+    
+    // 逐渐缩小
+    if (this.life < this.maxLife * 0.5) {
+      this.size = Math.max(0, this.size - this.shrink);
+    }
   }
 
   render(ctx) {
+    if (this.size <= 0) return;
+    
     ctx.save();
-    ctx.globalAlpha = this.life / this.maxLife; // 逐渐消失
+    ctx.globalAlpha = this.life / this.maxLife; // 透明度渐变
     ctx.fillStyle = this.color;
-    ctx.fillRect(this.x, this.y, this.size, this.size);
+
+    if (this.shape === 'circle') {
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+    }
+    
     ctx.restore();
   }
 }

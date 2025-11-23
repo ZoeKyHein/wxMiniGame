@@ -25,16 +25,31 @@ export default class EnemyBullet {
     }
   }
 
-  render(ctx) {
+  render(ctx, img) {
     if (!this.active) return;
     
-    ctx.fillStyle = '#e74c3c'; // 红色子弹
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    if (img) {
+      // 敌人子弹用红色滤镜
+      ctx.save();
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = '#e74c3c';
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      
+      const size = 8;
+      ctx.drawImage(img, this.x - size/2, this.y - size/2, size, size);
+    } else {
+      // 没图时的备选方案
+      ctx.fillStyle = '#e74c3c'; // 红色子弹
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
   }
 }
 

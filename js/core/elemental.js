@@ -15,6 +15,8 @@ export default class ElementalSystem {
       reaction: ReactionType.NONE,
       remainingElement: triggerElement, // 默认新的附着元素是攻击者的元素
       aoeRange: 0,
+      aoeDamage: null,
+      knockback: 0,
       effect: null // 新增：特殊效果 (如 freeze, slow)
     };
     
@@ -22,15 +24,25 @@ export default class ElementalSystem {
     const level = levels ? (levels[triggerElement] || 1) : 1;
     
     // 基础元素效果 (无反应时也要生效)
-    // 如果是火，施加燃烧
     if (triggerElement === ElementType.FIRE) {
-      // Lv1: 60帧, 20%伤害
-      // Lv5: 210帧, 100%伤害
       result.effect = { 
         type: 'burn', 
         duration: 60 + (level - 1) * 30, 
         damage: Math.max(1, Math.floor(baseDamage * (0.2 * level))) 
       };
+      // 火自带小范围溅射
+      result.aoeRange = 30 + level * 5;
+    }
+    else if (triggerElement === ElementType.WATER) {
+      // 水自带击退
+      result.knockback = 15 + level * 5;
+    }
+    else if (triggerElement === ElementType.ICE) {
+      // 冰有几率直接冻结
+      const freezeChance = 0.1 + level * 0.02;
+      if (Math.random() < freezeChance) {
+        result.effect = { type: 'freeze', duration: 30 };
+      }
     }
 
     // 1. 冻结 (水 + 冰)
@@ -62,6 +74,7 @@ export default class ElementalSystem {
       result.reaction = ReactionType.SUPERCONDUCT;
       result.damage = baseDamage * 1.5;
       result.aoeRange = 80; // 小范围爆炸
+      result.aoeDamage = baseDamage * 0.5;
       result.remainingElement = ElementType.NONE;
     }
     // 4. 蒸发反应 (水+火 或 火+水)
@@ -81,11 +94,11 @@ export default class ElementalSystem {
       result.reaction = ReactionType.OVERLOAD;
       result.damage = baseDamage * 1.5; // 超载造成 1.5 倍伤害
       result.remainingElement = ElementType.NONE; // 反应后元素消除
-      result.isAoE = true; // 标记为 AoE 效果
       // 雷等级影响爆炸范围
       const lightningLv = levels ? (levels[ElementType.LIGHTNING] || 1) : 1;
       result.aoeRange = 100 + (lightningLv - 1) * 25; // AoE 范围
       result.aoeDamage = baseDamage * 0.5; // AoE 伤害为基础伤害的 50%
+      result.knockback = 40;
     }
     
     // 如果目标没有元素，或者没有触发反应，则覆盖为新的元素

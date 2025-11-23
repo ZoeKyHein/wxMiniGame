@@ -14,3 +14,9 @@ export const ReactionType = {
   MELT: 'melt',         // 融化 (火+冰) - 增伤
   SUPERCONDUCT: 'superconduct' // 超导 (雷+冰) - 范围减防/伤
 };
+
+export const PickupType = {
+  EXP: 'exp',
+  COIN: 'coin',
+  HEALTH: 'health'
+};
