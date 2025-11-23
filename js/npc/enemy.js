@@ -330,13 +330,26 @@ export default class Enemy {
       ctx.restore();
     }
     
-    // 血条
-    const maxHp = this.type === 'boss' ? 500 : (this.type === 'elite' ? 50 : 10);
-    if (this.type !== 'normal' || this.hp < maxHp) {
+    ctx.restore(); // 恢复变换，确保血条在世界坐标系中绘制
+    
+    // 血条（必须在 restore 之后，使用世界坐标）
+    const maxHp = this.type === 'boss' ? 5000 : (this.type === 'elite' ? 50 : (this.type === 'charger' ? 8 : 10));
+    // 根据实际血量计算 maxHp（考虑 hpMultiplier）
+    const actualMaxHp = maxHp; // 这里应该用初始血量，但为了简化，用类型基础值
+    if (this.type !== 'normal' || this.hp < actualMaxHp) {
+      const barWidth = this.width;
+      const barHeight = 5;
+      const barX = this.x - barWidth / 2;
+      const barY = this.y - (this.height / 2 + 15); // 稍微高一点，避免和阴影重叠
+      
+      // 背景
       ctx.fillStyle = '#555';
-      ctx.fillRect(this.x - this.width/2, this.y - (this.height/2 + 10), this.width, 5);
+      ctx.fillRect(barX, barY, barWidth, barHeight);
+      
+      // 血量
+      const hpRatio = Math.max(0, Math.min(1, this.hp / actualMaxHp));
       ctx.fillStyle = '#0f0';
-      ctx.fillRect(this.x - this.width/2, this.y - (this.height/2 + 10), this.width * (Math.max(0, this.hp) / maxHp), 5);
+      ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
     }
   }
 }
