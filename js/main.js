@@ -22,6 +22,11 @@ import FormationManager from './core/formation.js'; // 引入阵型管理器
 import ItemManager from './core/item_manager.js'; // 引入道具管理器
 import Compendium from './ui/compendium.js'; // 引入图鉴系统
 import AchievementManager from './core/achievements.js'; // 引入成就系统
+import DebugSystem from './core/debug_system.js'; // 引入调试系统
+import Button from './ui/button.js'; // 引入按钮组件
+
+// 定义一个全局开关，发布正式版时设为 false
+const IS_DEBUG_MODE = true;
 
 // 游戏状态枚举
 const GameState = {
@@ -145,6 +150,12 @@ export default class Main {
     this.gameOverSoundPlayed = false;
     this.victorySoundPlayed = false;
 
+    // 初始化 Debug 系统
+    this.debugSystem = new DebugSystem(this);
+    
+    // UI 按钮管理器
+    this.startButtons = [];
+
     this.initTouchEvents();
     this.bindLoop = this.loop.bind(this);
     
@@ -197,7 +208,13 @@ export default class Main {
     wx.onTouchStart((e) => {
       const tx = e.changedTouches[0].clientX;
       const ty = e.changedTouches[0].clientY;
-      
+
+      // 1. 如果 Debug 面板是打开的，事件全交给它处理
+      if (this.debugSystem && this.debugSystem.active) {
+        this.debugSystem.handleTouch(tx, ty);
+        return;
+      }
+
       // 检查暂停按钮 (右上角)
       if (tx > this.screenWidth - 50 && ty < 50 && this.state === GameState.PLAYING) {
         this.uiSystem.togglePause();
@@ -211,22 +228,11 @@ export default class Main {
       }
       
       if (this.state === GameState.START) {
-        // 检查是否点击了商店按钮
-        const btnX = this.screenWidth / 2 - 80;
-        const shopBtnY = this.screenHeight / 2 + 100;
-        if (tx >= btnX && tx <= btnX + 160 && ty >= shopBtnY && ty <= shopBtnY + 50) {
-          this.state = GameState.SHOP;
-          return;
+        // 处理主界面点击，委托给按钮处理
+        for (let btn of this.startButtons) {
+          if (btn.checkClick(tx, ty)) return; // 点到了按钮就返回
         }
-        // 检查是否点击了图鉴按钮
-        const compendiumBtnY = this.screenHeight / 2 + 160;
-        if (tx >= btnX && tx <= btnX + 160 && ty >= compendiumBtnY && ty <= compendiumBtnY + 50) {
-          this.compendium = new Compendium(this.screenWidth, this.screenHeight, () => {
-            this.compendium = null;
-          });
-          return;
-        }
-        // 否则进选人
+        // 如果没有点到按钮，默认进入选人界面
         this.state = GameState.CHAR_SELECT;
       } else if (this.compendium) {
         this.compendium.handleTouch(tx, ty);
@@ -540,7 +546,7 @@ export default class Main {
             // 普通生成，根据游戏时间动态调整血量（数值平衡）
             // 第 1 分钟：基础血量，第 5 分钟：血量 x2，第 10 分钟：血量 x3
             const hpMultiplier = 1 + Math.floor(this.currentTime / 60) * 0.2; // 每分钟增加 20%
-            const enemy = new Enemy(this.worldWidth, this.worldHeight, type, hpMultiplier);
+            const enemy = new Enemy(this.worldWidth, this.worldHeight, type, hpMultiplier, this);
             
             // 覆盖 Enemy 的坐标生成逻辑，使其在 Camera 附近但不重叠
             const angle = Math.random() * Math.PI * 2;
@@ -578,7 +584,7 @@ export default class Main {
       35
     ));
     // Boss 血量固定，不受时间影响（已经是最终挑战）
-    const boss = new Enemy(this.worldWidth, this.worldHeight, 'boss', 1);
+    const boss = new Enemy(this.worldWidth, this.worldHeight, 'boss', 1, this);
     // Boss 生成在世界中心
     boss.x = this.worldWidth / 2;
     boss.y = this.worldHeight / 2;
@@ -599,7 +605,7 @@ export default class Main {
     ));
     // 精英怪也根据时间调整血量
     const hpMultiplier = 1 + Math.floor(this.currentTime / 60) * 0.2;
-    const elite = new Enemy(this.worldWidth, this.worldHeight, 'elite', hpMultiplier);
+    const elite = new Enemy(this.worldWidth, this.worldHeight, 'elite', hpMultiplier, this);
     // 精英怪在摄像机附近生成
     const angle = Math.random() * Math.PI * 2;
     const r = Math.sqrt(this.screenWidth**2 + this.screenHeight**2) / 2 + 100;
@@ -1624,6 +1630,12 @@ export default class Main {
     // 如果是 START 界面
     if (this.state === GameState.START) {
       this.renderStartScreen();
+      
+      // 绘制 Debug 面板 (必须在最后绘制，覆盖一切)
+      if (this.debugSystem && this.debugSystem.active) {
+        this.debugSystem.render(this.ctx);
+      }
+      
       this.ctx.restore(); // 记得 restore
       return;
     }
@@ -1825,45 +1837,176 @@ export default class Main {
       this.renderWorldBoundaries();
     }
     
+    // 1. 在最上层绘制 Debug 入口 (仅限开发模式)
+    if (IS_DEBUG_MODE && !this.debugSystem.active) {
+      this.ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+      this.ctx.font = 'bold 12px Arial';
+      this.ctx.textAlign = 'left';
+      this.ctx.textBaseline = 'top';
+      this.ctx.fillText('DEV', 10, 10);
+      // 可选：画个框方便看见
+      this.ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+      this.ctx.lineWidth = 1;
+      this.ctx.strokeRect(5, 5, 40, 30);
+    }
+
+    // 2. 绘制 Debug 面板 (必须在最后绘制，覆盖一切)
+    if (this.debugSystem && this.debugSystem.active) {
+      this.debugSystem.render(this.ctx);
+    }
+    
     // 4. 恢复画布
     this.ctx.restore();
   }
   
+  initStartScreenUI() {
+    this.startButtons = [];
+    
+    const cx = this.screenWidth / 2;
+    const bottomY = this.screenHeight - 100; // 距离底部 100 像素
+
+    // 1. 巨大的 "开始游戏" 按钮 (居中，下方)
+    const btnStart = new Button(cx, bottomY - 20, 200, 60, "开始战斗", {
+      bgColor: '#e67e22', // 橙色
+      textColor: '#ffffff',
+      fontSize: 28,
+      radius: 15,
+      onClick: () => {
+        this.state = GameState.CHAR_SELECT;
+      }
+    });
+    // 给开始按钮加个呼吸动画逻辑
+    const originalUpdate = btnStart.update.bind(btnStart);
+    btnStart.update = function() {
+      // 简单的 pulse 效果 (0.95 ~ 1.05)
+      this.scale = 1 + Math.sin(Date.now() / 200) * 0.05;
+      originalUpdate();
+    };
+    this.startButtons.push(btnStart);
+
+    // 2. "天赋商店" 按钮 (开始按钮左侧)
+    this.startButtons.push(new Button(cx - 160, bottomY - 10, 100, 50, "天赋", {
+      bgColor: '#2980b9', // 蓝色
+      textColor: '#ffffff',
+      fontSize: 18,
+      radius: 10,
+      onClick: () => {
+        this.state = GameState.SHOP;
+      }
+    }));
+
+    // 3. "图鉴" 按钮 (开始按钮右侧)
+    this.startButtons.push(new Button(cx + 160, bottomY - 10, 100, 50, "图鉴", {
+      bgColor: '#8e44ad', // 紫色
+      textColor: '#ffffff',
+      fontSize: 18,
+      radius: 10,
+      onClick: () => {
+        this.compendium = new Compendium(this.screenWidth, this.screenHeight, () => {
+          this.compendium = null;
+        });
+      }
+    }));
+    
+    // 4. "Debug" 按钮 (左上角，仅在调试模式显示)
+    if (IS_DEBUG_MODE) {
+      const self = this; // 保存 Main 实例的引用
+      const debugBtn = new Button(40, 40, 60, 30, "DEV", {
+        bgColor: '#c0392b',
+        textColor: '#ffffff',
+        fontSize: 12,
+        radius: 5,
+        onClick: function() {
+          console.log('DEV button clicked!');
+          console.log('Debug system exists:', !!self.debugSystem);
+          console.log('Current active state:', self.debugSystem?.active);
+          if (self.debugSystem) {
+            self.debugSystem.active = true;
+            console.log('Debug system activated:', self.debugSystem.active);
+            console.log('Game state:', self.state);
+          } else {
+            console.error('Debug system not initialized!');
+          }
+        }
+      });
+      this.startButtons.push(debugBtn);
+    }
+  }
+
   renderStartScreen() {
-    this.ctx.fillStyle = '#2c3e50';
+    // 1. 绘制背景 (加一点暗角 Vignette 效果，显得高级)
+    // 创建径向渐变
+    const grad = this.ctx.createRadialGradient(
+      this.screenWidth/2, this.screenHeight/2, this.screenHeight/3,
+      this.screenWidth/2, this.screenHeight/2, this.screenHeight
+    );
+    grad.addColorStop(0, '#2c3e50'); // 中心稍亮
+    grad.addColorStop(1, '#1a252f'); // 四周暗
+    this.ctx.fillStyle = grad;
     this.ctx.fillRect(0, 0, this.screenWidth, this.screenHeight);
 
-    this.ctx.fillStyle = '#f1c40f';
-    this.ctx.font = 'bold 40px Arial';
-    this.ctx.textAlign = 'center';
-    this.ctx.fillText('ELEMENTAL SURVIVOR', this.screenWidth / 2, this.screenHeight / 2 - 40);
-    
+    // 2. 绘制 LOGO (主标题)
+    this.ctx.save();
+    this.ctx.shadowColor = '#f1c40f';
+    this.ctx.shadowBlur = 20;
     this.ctx.fillStyle = '#fff';
-    this.ctx.font = '20px Arial';
-    this.ctx.fillText('Tap to Start', this.screenWidth / 2, this.screenHeight / 2 + 20);
+    this.ctx.font = 'bold 60px Arial'; // 大字体
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText('ELEMENTAL', this.screenWidth / 2, this.screenHeight * 0.35);
+    
+    this.ctx.font = 'bold 40px Arial';
+    this.ctx.fillStyle = '#f1c40f'; // 金色副标题
+    this.ctx.fillText('SURVIVOR', this.screenWidth / 2, this.screenHeight * 0.35 + 50);
+    this.ctx.restore();
 
-    // 显示最高分
-    this.ctx.fillStyle = '#bdc3c7';
+    // 3. 绘制顶部信息栏 (金币)
+    this.renderTopBar();
+
+    // 4. 绘制最高分 (作为装饰放在 Logo 下面一点)
+    this.ctx.fillStyle = '#95a5a6';
     this.ctx.font = '16px Arial';
+    this.ctx.textAlign = 'center';
     const bestMins = Math.floor(this.bestTime / 60).toString().padStart(2, '0');
     const bestSecs = (this.bestTime % 60).toString().padStart(2, '0');
-    this.ctx.fillText(`Best Time: ${bestMins}:${bestSecs}`, this.screenWidth / 2, this.screenHeight / 2 + 60);
-    this.ctx.fillText('Tap to choose a hero', this.screenWidth / 2, this.screenHeight / 2 + 90);
+    this.ctx.fillText(`BEST RECORD: ${bestMins}:${bestSecs}`, this.screenWidth / 2, this.screenHeight * 0.35 + 90);
+
+    // 5. 绘制所有按钮
+    if (this.startButtons && this.startButtons.length > 0) {
+      this.startButtons.forEach(btn => {
+        if (btn) {
+          btn.update(); // 更新动画
+          btn.render(this.ctx);
+        }
+      });
+    } else {
+      // 如果按钮未初始化，立即初始化
+      this.initStartScreenUI();
+      this.startButtons.forEach(btn => {
+        if (btn) {
+          btn.update();
+          btn.render(this.ctx);
+        }
+      });
+    }
+  }
+  
+  renderTopBar() {
+    // 可以在右上角画一个长条背景
+    const padding = 20;
+    this.ctx.textAlign = 'right';
     
-    // 绘制"商店"按钮
-    this.ctx.fillStyle = '#e67e22';
-    this.ctx.fillRect(this.screenWidth / 2 - 80, this.screenHeight / 2 + 100, 160, 50);
+    // 金币图标 (简单的黄圆代替)
+    const coinX = this.screenWidth - padding;
+    const coinY = 30;
+    
+    this.ctx.fillStyle = '#f1c40f';
+    this.ctx.beginPath();
+    this.ctx.arc(coinX - 10, coinY, 10, 0, Math.PI*2);
+    this.ctx.fill();
+    
     this.ctx.fillStyle = '#fff';
     this.ctx.font = 'bold 20px Arial';
-    this.ctx.fillText(`SHOP ($${this.totalCoins})`, this.screenWidth / 2, this.screenHeight / 2 + 132);
-    
-    // 绘制"图鉴"按钮
-    this.ctx.fillStyle = '#9b59b6';
-    this.ctx.fillRect(this.screenWidth / 2 - 80, this.screenHeight / 2 + 160, 160, 50);
-    this.ctx.fillStyle = '#fff';
-    this.ctx.font = 'bold 20px Arial';
-    const unlockedCount = wx.getStorageSync('unlocked_items')?.length || 0;
-    this.ctx.fillText(`COMPENDIUM (${unlockedCount})`, this.screenWidth / 2, this.screenHeight / 2 + 192);
+    this.ctx.fillText(this.totalCoins.toString(), coinX - 25, coinY);
   }
   
   renderShop() {

@@ -11,7 +11,7 @@ export default class FormationManager {
       
       // 确保在地图内
       if (ex > 0 && ex < game.worldWidth && ey > 0 && ey < game.worldHeight) {
-         game.enemies.push(new Enemy(game.worldWidth, game.worldHeight, 'normal', 1));
+         game.enemies.push(new Enemy(game.worldWidth, game.worldHeight, 'normal', 1, game));
          // 强制覆盖位置
          const e = game.enemies[game.enemies.length - 1];
          e.x = ex; 

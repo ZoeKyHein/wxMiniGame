@@ -5,6 +5,7 @@ export const Resources = {
   enemy_charger: 'images/enemy_charger.png',
   enemy_elite: 'images/enemy_elite.png',
   enemy_boss: 'images/enemy_boss.png',
+  boss_sheet: 'images/boss_sheet.png', // Boss 序列帧动画图
   exp_orb: 'images/exp_orb.png',
   bullet: 'images/bullet_normal.png'
 };

@@ -175,6 +175,9 @@ export default class Hero {
    * @returns {boolean} 是否真正受到了伤害
    */
   takeDamage(amount, attacker = null) {
+    // 调试模式无敌
+    if (this.isInvincibleCheat) return false;
+    
     if (this.invincibleTime > 0 || this.isDead) return false;
 
     // 应用伤害减免
